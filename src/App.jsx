@@ -94,6 +94,24 @@ const THEMES = {
 };
 
 const BUCKETS = ["Inbox", "Next week", "Someday"];
+
+/* ---------- automatic category colors ----------
+   Each category/sub name is hashed to a hue, so the same name always
+   gets the same color — no setup needed. Settings can override (cycle)
+   a name's color; overrides are stored in prefs. */
+const HUES = [14, 32, 48, 90, 145, 168, 190, 210, 235, 265, 300, 330];
+const hashStr = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; };
+const hueFor = (name, overrides) =>
+  overrides && overrides[name] !== undefined
+    ? HUES[overrides[name] % HUES.length]
+    : HUES[hashStr(String(name).toLowerCase()) % HUES.length];
+const catStyle = (name, dark, overrides) => {
+  const h = hueFor(name, overrides);
+  return dark
+    ? { background: `hsl(${h},32%,22%)`, color: `hsl(${h},60%,72%)` }
+    : { background: `hsl(${h},52%,91%)`, color: `hsl(${h},65%,29%)` };
+};
+const dotColor = (name, dark, overrides) => `hsl(${hueFor(name, overrides)},${dark ? 50 : 60}%,${dark ? 62 : 42}%)`;
 const RECURRENCES = [["", "No repeat"], ["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["yearly", "Yearly"]];
 const REC_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" };
 const VIEWS = ["List", "Table", "Dashboard"];
@@ -124,6 +142,7 @@ export default function TaskManager() {
   const [scriptUrl, setScriptUrl] = useState("");
   const [lastSync, setLastSync] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [catColors, setCatColors] = useState({});
   const csvRef = useRef(null);
   const T = dark ? THEMES.dark : THEMES.light;
   const today = todayStr();
@@ -142,6 +161,7 @@ export default function TaskManager() {
           setDark(prefs.dark === true);
           if (VIEWS.includes(prefs.view)) setView(prefs.view);
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
+          if (prefs.catColors) setCatColors(prefs.catColors);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
       } catch (e) { /* defaults */ }
@@ -154,7 +174,7 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, scriptUrl, lastSync, ...patch };
+    const p = { dark, view, scriptUrl, lastSync, catColors, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
@@ -302,7 +322,7 @@ export default function TaskManager() {
 
   /* ---------- Google Sheets sync (via Apps Script web app) ---------- */
   const syncPush = async () => {
-    if (!scriptUrl.trim()) { setModal("settings"); return; }
+    if (!scriptUrl.trim()) { switchView("Settings"); flash("Paste your Apps Script URL first"); return; }
     setSyncing(true);
     try {
       // text/plain avoids the CORS preflight that Apps Script can't answer
@@ -324,7 +344,7 @@ export default function TaskManager() {
   };
 
   const syncPull = async () => {
-    if (!scriptUrl.trim()) { setModal("settings"); return; }
+    if (!scriptUrl.trim()) { switchView("Settings"); flash("Paste your Apps Script URL first"); return; }
     if (!window.confirm("Replace all tasks in this app with the contents of your sheet?")) return;
     setSyncing(true);
     try {
@@ -350,6 +370,39 @@ export default function TaskManager() {
       flash("Pull failed — see Settings for setup help");
       console.error(e);
     } finally { setSyncing(false); }
+  };
+
+  /* ---------- category & sub category management ---------- */
+  const cycleColor = (name) => {
+    const cur = catColors[name] !== undefined ? catColors[name] : hashStr(String(name).toLowerCase()) % HUES.length;
+    const next = { ...catColors, [name]: (cur + 1) % HUES.length };
+    setCatColors(next); savePrefs({ catColors: next });
+  };
+  const renameField = (field, oldName) => {
+    const nn = window.prompt(`Rename "${oldName}" to:`, oldName);
+    if (!nn || !nn.trim() || nn.trim() === oldName) return;
+    const name = nn.trim();
+    persist(tasks.map((t) => (t[field] === oldName ? { ...t, [field]: name } : t)));
+    if (catColors[oldName] !== undefined) {
+      const nc = { ...catColors, [name]: catColors[oldName] };
+      delete nc[oldName];
+      setCatColors(nc); savePrefs({ catColors: nc });
+    }
+    if (field === "category" && filterCat === oldName) setFilterCat(name);
+    if (field === "subCategory" && filterSub === oldName) setFilterSub(name);
+    flash(`Renamed to "${name}" everywhere`);
+  };
+  const deleteField = (field, name) => {
+    const n = tasks.filter((t) => t[field] === name).length;
+    if (!window.confirm(`Remove "${name}" from ${n} task${n === 1 ? "" : "s"}? The tasks themselves are kept.`)) return;
+    persist(tasks.map((t) => (t[field] === name ? { ...t, [field]: "" } : t)));
+    if (field === "category" && filterCat === name) setFilterCat("All");
+    if (field === "subCategory" && filterSub === name) setFilterSub("All");
+  };
+  const deleteAll = () => {
+    if (!window.confirm("Delete ALL tasks? This cannot be undone.")) return;
+    if (!window.confirm("Really sure? Consider Sync or CSV export first.")) return;
+    persist([]);
   };
 
   const copyCSV = () => {
@@ -481,7 +534,8 @@ export default function TaskManager() {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={S.title(t.done)}>{t.title}</div>
         <div style={S.meta}>
-          {(t.category || t.subCategory) && <span style={S.tag(T.accentSoft, T.accent)}>{[t.category, t.subCategory].filter(Boolean).join(" · ")}</span>}
+          {t.category && <span style={S.tag(catStyle(t.category, dark, catColors).background, catStyle(t.category, dark, catColors).color)}>{t.category}</span>}
+          {t.subCategory && <span style={{ ...S.tag(catStyle(t.subCategory, dark, catColors).background, catStyle(t.subCategory, dark, catColors).color), boxShadow: `inset 0 0 0 1px ${dotColor(t.subCategory, dark, catColors)}` }}>{t.subCategory}</span>}
           {t.dueDate && (
             <span style={S.tag(t.dueDate < today && !t.done ? T.dangerSoft : T.tagBg, t.dueDate < today && !t.done ? T.danger : T.mute)}>
               {fmtDate(t.dueDate)}{t.dueTime ? ` · ${fmtTime(t.dueTime)}` : ""}
@@ -514,7 +568,10 @@ export default function TaskManager() {
             <h1 style={S.h1}>Tasks</h1>
             <p style={S.sub}>{open.length} open{doneList.length ? ` · ${doneList.length} done` : ""}</p>
           </div>
-          <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...S.round, borderColor: view === "Settings" ? T.accent : T.line, color: view === "Settings" ? T.accent : T.ink }} onClick={() => switchView("Settings")} aria-label="Settings">⚙</button>
+            <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
+          </div>
         </header>
 
         {/* view tabs */}
@@ -523,7 +580,7 @@ export default function TaskManager() {
         </div>
 
         {/* add card — everything inline, no hidden tab */}
-        {view !== "Dashboard" && (
+        {view !== "Dashboard" && view !== "Settings" && (
           <div style={S.addCard}>
             <div style={S.addRow}>
               <input style={S.addInput} placeholder="Add a task…" value={newTitle}
@@ -590,7 +647,7 @@ export default function TaskManager() {
         )}
 
         {/* search + filter (list & table) */}
-        {view !== "Dashboard" && (
+        {view !== "Dashboard" && view !== "Settings" && (
           <>
             <div style={S.toolRow}>
               <input style={S.search} placeholder="Search tasks…" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -602,12 +659,12 @@ export default function TaskManager() {
               <div style={S.panel}>
                 <div>
                   <label style={S.label}>Category</label>
-                  <div style={S.chipRow}>{categories.map((c) => <button key={c} style={S.chip(filterCat === c)} onClick={() => { setFilterCat(c); setFilterSub("All"); }}>{c}</button>)}</div>
+                  <div style={S.chipRow}>{categories.map((c) => <button key={c} style={S.chip(filterCat === c)} onClick={() => { setFilterCat(c); setFilterSub("All"); }}>{c !== "All" && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(c, dark, catColors), marginRight: 6 }} />}{c}</button>)}</div>
                 </div>
                 {subCats.length > 1 && (
                   <div>
                     <label style={S.label}>Sub category</label>
-                    <div style={S.chipRow}>{subCats.map((c) => <button key={c} style={S.chip(filterSub === c)} onClick={() => setFilterSub(c)}>{c}</button>)}</div>
+                    <div style={S.chipRow}>{subCats.map((c) => <button key={c} style={S.chip(filterSub === c)} onClick={() => setFilterSub(c)}>{c !== "All" && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(c, dark, catColors), marginRight: 6 }} />}{c}</button>)}</div>
                   </div>
                 )}
                 <div>
@@ -672,8 +729,8 @@ export default function TaskManager() {
                   <tr key={t.id} style={{ background: i % 2 ? T.rowAlt : "transparent", opacity: t.done ? 0.55 : 1 }}>
                     <td style={S.td}><button style={S.check(t.done)} onClick={() => toggle(t.id)}>{t.done ? "✓" : ""}</button></td>
                     <td style={{ ...S.td, fontWeight: 500, textDecoration: t.done ? "line-through" : "none", minWidth: 160 }}>{t.title}</td>
-                    <td style={S.td}>{t.category || <span style={{ color: T.mute }}>—</span>}</td>
-                    <td style={S.td}>{t.subCategory || <span style={{ color: T.mute }}>—</span>}</td>
+                    <td style={S.td}>{t.category ? <span style={S.tag(catStyle(t.category, dark, catColors).background, catStyle(t.category, dark, catColors).color)}>{t.category}</span> : <span style={{ color: T.mute }}>—</span>}</td>
+                    <td style={S.td}>{t.subCategory ? <span style={S.tag(catStyle(t.subCategory, dark, catColors).background, catStyle(t.subCategory, dark, catColors).color)}>{t.subCategory}</span> : <span style={{ color: T.mute }}>—</span>}</td>
                     <td style={{ ...S.td, whiteSpace: "nowrap", color: t.dueDate && t.dueDate < today && !t.done ? T.danger : "inherit" }}>
                       {t.dueDate ? `${fmtShort(t.dueDate)}${t.dueTime ? " " + fmtTime(t.dueTime) : ""}` : (t.bucket && t.bucket !== "Inbox" ? t.bucket : "—")}
                     </td>
@@ -743,7 +800,7 @@ export default function TaskManager() {
               {stats.catRows.map(([cat, n]) => (
                 <div key={cat} style={S.barRow}>
                   <span style={S.barLbl}>{cat}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, T.accent)} /></div>
+                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, catColors))} /></div>
                   <span style={S.barVal}>{n}</span>
                 </div>
               ))}
@@ -761,6 +818,75 @@ export default function TaskManager() {
             </div>
           </>
         )}
+
+        {/* ---------- SETTINGS VIEW ---------- */}
+        {view === "Settings" && (
+          <>
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Appearance</h3>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 14.5 }}>Dark mode</span>
+                <button style={S.footBtn} onClick={() => setTheme(!dark)}>{dark ? "On · switch to light" : "Off · switch to dark"}</button>
+              </div>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Categories</h3>
+              {categories.filter((c) => c !== "All").length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No categories yet — they appear here once you use them on tasks.</div>}
+              {categories.filter((c) => c !== "All").map((c) => (
+                <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}` }}>
+                  <button title="Change color" onClick={() => cycleColor(c)}
+                    style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, catColors) }} />
+                  <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                  <span style={{ ...S.count }}>{tasks.filter((t) => t.category === c).length}</span>
+                  <button style={S.iconBtn} onClick={() => renameField("category", c)} title="Rename">✎</button>
+                  <button style={S.iconBtn} onClick={() => deleteField("category", c)} title="Remove">✕</button>
+                </div>
+              ))}
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "10px 0 0" }}>Colors are assigned automatically — tap a dot to cycle it. Rename applies to every task using it.</p>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Sub categories</h3>
+              {subSuggestions.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No sub categories yet.</div>}
+              {subSuggestions.map((c) => (
+                <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}` }}>
+                  <button title="Change color" onClick={() => cycleColor(c)}
+                    style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, catColors) }} />
+                  <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                  <span style={{ ...S.count }}>{tasks.filter((t) => t.subCategory === c).length}</span>
+                  <button style={S.iconBtn} onClick={() => renameField("subCategory", c)} title="Rename">✎</button>
+                  <button style={S.iconBtn} onClick={() => deleteField("subCategory", c)} title="Remove">✕</button>
+                </div>
+              ))}
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Google Sheets sync</h3>
+              <label style={S.label}>Apps Script web app URL</label>
+              <input style={S.input} placeholder="https://script.google.com/macros/s/…/exec"
+                value={scriptUrl} onChange={(e) => setScriptUrl(e.target.value)} onBlur={() => savePrefs({ scriptUrl })} />
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "6px 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={S.addBtn} onClick={() => { savePrefs({ scriptUrl }); syncPush(); }} disabled={syncing}>{syncing ? "Syncing…" : "Push to sheet"}</button>
+                <button style={S.footBtn} onClick={() => { savePrefs({ scriptUrl }); syncPull(); }} disabled={syncing}>Pull from sheet</button>
+              </div>
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "12px 0 0", lineHeight: 1.5 }}>
+                Setup: Google Sheet → Extensions → Apps Script → paste the sync script → Deploy → Web app (execute as Me, access: Anyone) → paste the /exec URL above.
+              </p>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Data</h3>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={S.footBtn} onClick={() => setModal("export")}>Export CSV</button>
+                <button style={S.footBtn} onClick={() => setModal("import")}>Import CSV</button>
+                <button style={S.footBtn} onClick={clearDone}>Clear completed</button>
+                <button style={{ ...S.footBtn, color: T.danger, borderColor: T.danger }} onClick={deleteAll}>Delete all tasks</button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* footer */}
@@ -769,7 +895,7 @@ export default function TaskManager() {
           {syncing ? "Syncing…" : "⇅ Sync to Sheets"}
         </button>
         <button style={S.footBtn} onClick={() => setModal("export")}>CSV</button>
-        <button style={S.footBtn} onClick={() => setModal("settings")} aria-label="Sync settings">⚙</button>
+        <button style={S.footBtn} onClick={() => switchView("Settings")} aria-label="Settings">⚙</button>
       </div>
 
       {toast && <div style={S.toast}>{toast}</div>}
@@ -801,31 +927,6 @@ export default function TaskManager() {
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button style={S.addBtn} onClick={doImport}>Import</button>
               <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* settings modal */}
-      {modal === "settings" && (
-        <div style={S.modalBg} onClick={() => setModal(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Sheets sync setup</h3>
-            <label style={S.label}>Apps Script web app URL</label>
-            <input style={S.input} placeholder="https://script.google.com/macros/s/…/exec"
-              value={scriptUrl}
-              onChange={(e) => setScriptUrl(e.target.value)}
-              onBlur={() => savePrefs({ scriptUrl })} />
-            <p style={{ fontSize: 12.5, color: T.mute, margin: "6px 0 0" }}>
-              {lastSync ? `Last synced: ${lastSync}` : "Not synced yet."} Paste this once — after that, syncing is one tap.
-            </p>
-            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-              <button style={S.addBtn} onClick={() => { savePrefs({ scriptUrl }); syncPush(); }} disabled={syncing}>Push to sheet</button>
-              <button style={S.footBtn} onClick={() => { savePrefs({ scriptUrl }); syncPull(); }} disabled={syncing}>Pull from sheet</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => { savePrefs({ scriptUrl }); setModal(null); }}>Done</button>
-            </div>
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px dashed ${T.line}`, fontSize: 13.5, color: T.mute, lineHeight: 1.55 }}>
-              <strong style={{ color: T.ink }}>One-time setup:</strong> open your Google Sheet → Extensions → Apps Script → paste the script I gave you → Deploy → New deployment → Web app → execute as "Me", access "Anyone" → copy the /exec URL here. Note: sync only works when this app is hosted (e.g. Netlify) — the Claude preview blocks outside network calls, so use CSV export while testing here.
             </div>
           </div>
         </div>

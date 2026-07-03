@@ -479,6 +479,10 @@ export default function TaskManager() {
     persist([]);
   };
 
+  /* clear the item inputs when switching lists, so a section name
+     from one list doesn't leak into another */
+  useEffect(() => { setNewItemText(""); setNewItemSection(""); }, [activeListId]);
+
   /* ---------- lists ---------- */
   const activeList = lists.find((l) => l.id === activeListId) || null;
   const addList = () => {

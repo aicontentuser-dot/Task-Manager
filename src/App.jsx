@@ -143,20 +143,25 @@ export default function TaskManager() {
   const [lastSync, setLastSync] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [catColors, setCatColors] = useState({});
+  const [pickerFor, setPickerFor] = useState(null);
   const csvRef = useRef(null);
   const T = dark ? THEMES.dark : THEMES.light;
   const today = todayStr();
 
-  /* load */
+  /* load — with a timeout guard so a slow/unresponsive storage
+     bridge can never leave the app stuck on the loading screen */
   useEffect(() => {
+    let cancelled = false;
+    const withTimeout = (p, ms) =>
+      Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("storage timeout")), ms))]);
     (async () => {
       try {
-        const r = await store.get(STORE_KEY);
-        if (r?.value) setTasks(JSON.parse(r.value).map((t) => ({ recurrence: "", bucket: "Inbox", completedAt: "", ...t })));
+        const r = await withTimeout(store.get(STORE_KEY), 2500);
+        if (!cancelled && r?.value) setTasks(JSON.parse(r.value).map((t) => ({ recurrence: "", bucket: "Inbox", completedAt: "", ...t })));
       } catch (e) { /* fresh start */ }
       try {
-        const p = await store.get(PREFS_KEY);
-        if (p?.value) {
+        const p = await withTimeout(store.get(PREFS_KEY), 2500);
+        if (!cancelled && p?.value) {
           const prefs = JSON.parse(p.value);
           setDark(prefs.dark === true);
           if (VIEWS.includes(prefs.view)) setView(prefs.view);
@@ -165,8 +170,9 @@ export default function TaskManager() {
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
       } catch (e) { /* defaults */ }
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     })();
+    return () => { cancelled = true; };
   }, []);
 
   const persist = async (next) => {
@@ -188,6 +194,27 @@ export default function TaskManager() {
     return ["All", ...Array.from(new Set(pool.map((t) => t.subCategory).filter(Boolean))).sort()];
   }, [tasks, filterCat]);
   const subSuggestions = useMemo(() => Array.from(new Set(tasks.map((t) => t.subCategory).filter(Boolean))), [tasks]);
+
+  /* Collision-free colors: manual picks win, then every remaining name gets
+     its hashed hue — but if that hue is taken, it probes to the next free one,
+     so distinct names get distinct colors (until there are more than 12). */
+  const colorMap = useMemo(() => {
+    const names = Array.from(new Set([
+      ...tasks.map((t) => t.category),
+      ...tasks.map((t) => t.subCategory),
+    ].filter(Boolean))).sort();
+    const map = {}, taken = new Set();
+    names.forEach((n) => {
+      if (catColors[n] !== undefined) { map[n] = catColors[n] % HUES.length; taken.add(map[n]); }
+    });
+    names.forEach((n) => {
+      if (map[n] !== undefined) return;
+      let idx = hashStr(n.toLowerCase()) % HUES.length, tries = 0;
+      while (taken.has(idx) && tries < HUES.length) { idx = (idx + 1) % HUES.length; tries++; }
+      map[n] = idx; taken.add(idx);
+    });
+    return map;
+  }, [tasks, catColors]);
 
   const q = search.trim().toLowerCase();
   const visible = tasks.filter((t) =>
@@ -373,10 +400,10 @@ export default function TaskManager() {
   };
 
   /* ---------- category & sub category management ---------- */
-  const cycleColor = (name) => {
-    const cur = catColors[name] !== undefined ? catColors[name] : hashStr(String(name).toLowerCase()) % HUES.length;
-    const next = { ...catColors, [name]: (cur + 1) % HUES.length };
+  const setColor = (name, idx) => {
+    const next = { ...catColors, [name]: idx };
     setCatColors(next); savePrefs({ catColors: next });
+    setPickerFor(null);
   };
   const renameField = (field, oldName) => {
     const nn = window.prompt(`Rename "${oldName}" to:`, oldName);
@@ -534,8 +561,8 @@ export default function TaskManager() {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={S.title(t.done)}>{t.title}</div>
         <div style={S.meta}>
-          {t.category && <span style={S.tag(catStyle(t.category, dark, catColors).background, catStyle(t.category, dark, catColors).color)}>{t.category}</span>}
-          {t.subCategory && <span style={{ ...S.tag(catStyle(t.subCategory, dark, catColors).background, catStyle(t.subCategory, dark, catColors).color), boxShadow: `inset 0 0 0 1px ${dotColor(t.subCategory, dark, catColors)}` }}>{t.subCategory}</span>}
+          {t.category && <span style={S.tag(catStyle(t.category, dark, colorMap).background, catStyle(t.category, dark, colorMap).color)}>{t.category}</span>}
+          {t.subCategory && <span style={{ ...S.tag(catStyle(t.subCategory, dark, colorMap).background, catStyle(t.subCategory, dark, colorMap).color), boxShadow: `inset 0 0 0 1px ${dotColor(t.subCategory, dark, colorMap)}` }}>{t.subCategory}</span>}
           {t.dueDate && (
             <span style={S.tag(t.dueDate < today && !t.done ? T.dangerSoft : T.tagBg, t.dueDate < today && !t.done ? T.danger : T.mute)}>
               {fmtDate(t.dueDate)}{t.dueTime ? ` · ${fmtTime(t.dueTime)}` : ""}
@@ -659,12 +686,12 @@ export default function TaskManager() {
               <div style={S.panel}>
                 <div>
                   <label style={S.label}>Category</label>
-                  <div style={S.chipRow}>{categories.map((c) => <button key={c} style={S.chip(filterCat === c)} onClick={() => { setFilterCat(c); setFilterSub("All"); }}>{c !== "All" && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(c, dark, catColors), marginRight: 6 }} />}{c}</button>)}</div>
+                  <div style={S.chipRow}>{categories.map((c) => <button key={c} style={S.chip(filterCat === c)} onClick={() => { setFilterCat(c); setFilterSub("All"); }}>{c !== "All" && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(c, dark, colorMap), marginRight: 6 }} />}{c}</button>)}</div>
                 </div>
                 {subCats.length > 1 && (
                   <div>
                     <label style={S.label}>Sub category</label>
-                    <div style={S.chipRow}>{subCats.map((c) => <button key={c} style={S.chip(filterSub === c)} onClick={() => setFilterSub(c)}>{c !== "All" && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(c, dark, catColors), marginRight: 6 }} />}{c}</button>)}</div>
+                    <div style={S.chipRow}>{subCats.map((c) => <button key={c} style={S.chip(filterSub === c)} onClick={() => setFilterSub(c)}>{c !== "All" && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(c, dark, colorMap), marginRight: 6 }} />}{c}</button>)}</div>
                   </div>
                 )}
                 <div>
@@ -729,8 +756,8 @@ export default function TaskManager() {
                   <tr key={t.id} style={{ background: i % 2 ? T.rowAlt : "transparent", opacity: t.done ? 0.55 : 1 }}>
                     <td style={S.td}><button style={S.check(t.done)} onClick={() => toggle(t.id)}>{t.done ? "✓" : ""}</button></td>
                     <td style={{ ...S.td, fontWeight: 500, textDecoration: t.done ? "line-through" : "none", minWidth: 160 }}>{t.title}</td>
-                    <td style={S.td}>{t.category ? <span style={S.tag(catStyle(t.category, dark, catColors).background, catStyle(t.category, dark, catColors).color)}>{t.category}</span> : <span style={{ color: T.mute }}>—</span>}</td>
-                    <td style={S.td}>{t.subCategory ? <span style={S.tag(catStyle(t.subCategory, dark, catColors).background, catStyle(t.subCategory, dark, catColors).color)}>{t.subCategory}</span> : <span style={{ color: T.mute }}>—</span>}</td>
+                    <td style={S.td}>{t.category ? <span style={S.tag(catStyle(t.category, dark, colorMap).background, catStyle(t.category, dark, colorMap).color)}>{t.category}</span> : <span style={{ color: T.mute }}>—</span>}</td>
+                    <td style={S.td}>{t.subCategory ? <span style={S.tag(catStyle(t.subCategory, dark, colorMap).background, catStyle(t.subCategory, dark, colorMap).color)}>{t.subCategory}</span> : <span style={{ color: T.mute }}>—</span>}</td>
                     <td style={{ ...S.td, whiteSpace: "nowrap", color: t.dueDate && t.dueDate < today && !t.done ? T.danger : "inherit" }}>
                       {t.dueDate ? `${fmtShort(t.dueDate)}${t.dueTime ? " " + fmtTime(t.dueTime) : ""}` : (t.bucket && t.bucket !== "Inbox" ? t.bucket : "—")}
                     </td>
@@ -800,7 +827,7 @@ export default function TaskManager() {
               {stats.catRows.map(([cat, n]) => (
                 <div key={cat} style={S.barRow}>
                   <span style={S.barLbl}>{cat}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, catColors))} /></div>
+                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, colorMap))} /></div>
                   <span style={S.barVal}>{n}</span>
                 </div>
               ))}
@@ -834,29 +861,53 @@ export default function TaskManager() {
               <h3 style={S.dashTitle}>Categories</h3>
               {categories.filter((c) => c !== "All").length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No categories yet — they appear here once you use them on tasks.</div>}
               {categories.filter((c) => c !== "All").map((c) => (
-                <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}` }}>
-                  <button title="Change color" onClick={() => cycleColor(c)}
-                    style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, catColors) }} />
-                  <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                  <span style={{ ...S.count }}>{tasks.filter((t) => t.category === c).length}</span>
-                  <button style={S.iconBtn} onClick={() => renameField("category", c)} title="Rename">✎</button>
-                  <button style={S.iconBtn} onClick={() => deleteField("category", c)} title="Remove">✕</button>
+                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
+                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === c ? null : c)}
+                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
+                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                    <span style={{ ...S.count }}>{tasks.filter((t) => t.category === c).length}</span>
+                    <button style={S.iconBtn} onClick={() => renameField("category", c)} title="Rename">✎</button>
+                    <button style={S.iconBtn} onClick={() => deleteField("category", c)} title="Remove">✕</button>
+                  </div>
+                  {pickerFor === c && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
+                      {HUES.map((h, i) => (
+                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
+                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
+                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
+                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "10px 0 0" }}>Colors are assigned automatically — tap a dot to cycle it. Rename applies to every task using it.</p>
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "10px 0 0" }}>Colors are assigned automatically and kept distinct. Tap a dot to pick a different color. Rename applies to every task using it.</p>
             </div>
 
             <div style={S.dashCard}>
               <h3 style={S.dashTitle}>Sub categories</h3>
               {subSuggestions.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No sub categories yet.</div>}
               {subSuggestions.map((c) => (
-                <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}` }}>
-                  <button title="Change color" onClick={() => cycleColor(c)}
-                    style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, catColors) }} />
-                  <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                  <span style={{ ...S.count }}>{tasks.filter((t) => t.subCategory === c).length}</span>
-                  <button style={S.iconBtn} onClick={() => renameField("subCategory", c)} title="Rename">✎</button>
-                  <button style={S.iconBtn} onClick={() => deleteField("subCategory", c)} title="Remove">✕</button>
+                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
+                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === "sub:" + c ? null : "sub:" + c)}
+                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === "sub:" + c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
+                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                    <span style={{ ...S.count }}>{tasks.filter((t) => t.subCategory === c).length}</span>
+                    <button style={S.iconBtn} onClick={() => renameField("subCategory", c)} title="Rename">✎</button>
+                    <button style={S.iconBtn} onClick={() => deleteField("subCategory", c)} title="Remove">✕</button>
+                  </div>
+                  {pickerFor === "sub:" + c && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
+                      {HUES.map((h, i) => (
+                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
+                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
+                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
+                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

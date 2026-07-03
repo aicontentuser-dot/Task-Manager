@@ -157,7 +157,7 @@ export default function TaskManager() {
     (async () => {
       try {
         const r = await withTimeout(store.get(STORE_KEY), 2500);
-        if (!cancelled && r?.value) setTasks(JSON.parse(r.value).map((t) => ({ recurrence: "", bucket: "Inbox", completedAt: "", ...t })));
+        if (!cancelled && r?.value) setTasks(JSON.parse(r.value).map((t) => ({ recurrence: "", bucket: "Inbox", completedAt: "", nextId: "", ...t })));
       } catch (e) { /* fresh start */ }
       try {
         const p = await withTimeout(store.get(PREFS_KEY), 2500);
@@ -308,14 +308,41 @@ export default function TaskManager() {
   const toggle = (id) => {
     const t = tasks.find((x) => x.id === id);
     if (!t) return;
-    let next = tasks.map((x) => (x.id === id ? { ...x, done: !x.done, completedAt: !x.done ? today : "" } : x));
-    if (!t.done && t.recurrence) {
-      const nextDue = advance(t.dueDate || today, t.recurrence);
-      const nextRem = t.reminderDate ? advance(t.reminderDate, t.recurrence) : "";
-      next = [{ ...t, id: uid(), done: false, completedAt: "", dueDate: nextDue, reminderDate: nextRem, createdAt: today }, ...next];
-      flash(`Repeats ${REC_LABEL[t.recurrence].toLowerCase()} — next: ${fmtDate(nextDue)}`);
+
+    if (!t.done) {
+      /* completing */
+      let next = tasks.map((x) => (x.id === id ? { ...x, done: true, completedAt: today } : x));
+      if (t.recurrence) {
+        const nextDue = advance(t.dueDate || today, t.recurrence);
+        const nextRem = t.reminderDate ? advance(t.reminderDate, t.recurrence) : "";
+        // guard against double-spawning (e.g. rapid double taps)
+        const already = next.some((x) => !x.done && x.title === t.title && x.recurrence === t.recurrence && x.dueDate === nextDue);
+        if (!already) {
+          const newId = uid();
+          next = [
+            { ...t, id: newId, done: false, completedAt: "", dueDate: nextDue, reminderDate: nextRem, createdAt: today, nextId: "" },
+            ...next.map((x) => (x.id === id ? { ...x, nextId: newId } : x)),
+          ];
+          flash(`Repeats ${REC_LABEL[t.recurrence].toLowerCase()} — next: ${fmtDate(nextDue)}`);
+        }
+      }
+      persist(next);
+    } else {
+      /* un-completing: also remove the occurrence this completion spawned,
+         so undo is a true undo with no duplicates left behind */
+      let next = tasks;
+      let removed = false;
+      if (t.recurrence && t.nextId) {
+        const spawned = tasks.find((x) => x.id === t.nextId);
+        if (spawned && !spawned.done) {
+          next = next.filter((x) => x.id !== t.nextId);
+          removed = true;
+        }
+      }
+      next = next.map((x) => (x.id === id ? { ...x, done: false, completedAt: "", nextId: "" } : x));
+      persist(next);
+      if (removed) flash("Completion undone — next occurrence removed");
     }
-    persist(next);
   };
 
   const remove = (id) => persist(tasks.filter((t) => t.id !== id));

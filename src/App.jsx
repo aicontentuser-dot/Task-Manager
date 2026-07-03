@@ -128,6 +128,7 @@ export default function TaskManager() {
   const [activeListId, setActiveListId] = useState(null);
   const [newListName, setNewListName] = useState("");
   const [newItemText, setNewItemText] = useState("");
+  const [newItemSection, setNewItemSection] = useState("");
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox" };
   const [newTitle, setNewTitle] = useState("");
   const [draft, setDraft] = useState(blank);
@@ -503,8 +504,45 @@ export default function TaskManager() {
   const addItem = () => {
     const text = newItemText.trim();
     if (!text || !activeList) return;
-    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, checked: false }] } : l)));
-    setNewItemText("");
+    const section = newItemSection.trim();
+    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, checked: false }] } : l)));
+    setNewItemText(""); // keep the section filled — items are usually added in batches per section
+  };
+  const editItemSection = (listId, itemId, current) => {
+    const s = window.prompt("Section for this item (blank for none):", current || "");
+    if (s === null) return;
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, section: s.trim() } : i)) } : l)));
+  };
+  const sectionsOf = (list) => {
+    const map = {}, order = [];
+    list.items.forEach((it) => {
+      const s = it.section || "";
+      if (!(s in map)) { map[s] = []; order.push(s); }
+      map[s].push(it);
+    });
+    order.sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    return order.map((s) => [s, map[s]]);
+  };
+  const printList = (list) => {
+    const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const html = `<html><head><title>${esc(list.name)}</title><style>
+      body{font-family:Georgia,serif;padding:28px;color:#222;max-width:640px}
+      h1{font-size:22px;margin:0 0 2px}.d{color:#777;font-size:12px;margin-bottom:16px}
+      h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.08em;color:#555;margin:18px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px}
+      ul{list-style:none;padding:0;margin:0}li{padding:4px 0;font-size:15px}
+      .c{color:#999;text-decoration:line-through}
+    </style></head><body>
+    <h1>${esc(list.name)}</h1><div class="d">${new Date().toLocaleDateString()}</div>
+    ${sectionsOf(list).map(([s, items]) =>
+      `${s ? `<h2>${esc(s)}</h2>` : ""}<ul>${items.map((i) => `<li class="${i.checked ? "c" : ""}">${i.checked ? "☑" : "☐"} ${esc(i.text)}</li>`).join("")}</ul>`
+    ).join("")}
+    </body></html>`;
+    const f = document.createElement("iframe");
+    Object.assign(f.style, { position: "fixed", right: 0, bottom: 0, width: 0, height: 0, border: 0 });
+    document.body.appendChild(f);
+    f.contentDocument.open(); f.contentDocument.write(html); f.contentDocument.close();
+    f.contentWindow.focus(); f.contentWindow.print();
+    setTimeout(() => document.body.removeChild(f), 2000);
   };
   const toggleItem = (listId, itemId) =>
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, checked: !i.checked } : i)) } : l)));
@@ -518,7 +556,7 @@ export default function TaskManager() {
   const promoteItem = (list, item) => {
     persist([{
       id: uid(), title: item.text, done: false, createdAt: today, completedAt: "", nextId: "",
-      category: list.name, subCategory: "", dueDate: "", dueTime: "",
+      category: list.name, subCategory: item.section || "", dueDate: "", dueTime: "",
       reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox",
     }, ...tasks]);
     flash(`Added to Tasks · category "${list.name}"`);
@@ -903,25 +941,44 @@ export default function TaskManager() {
                 <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 17 }}>{activeList.name}</div>
                 <div style={{ fontSize: 12.5, color: T.mute }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
               </div>
+              <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>
               <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>
             </div>
-            <div style={{ ...S.addCard, display: "flex", gap: 8 }}>
-              <input style={S.addInput} placeholder="Add an item…" value={newItemText}
-                onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-              <button style={S.addBtn} onClick={addItem}>Add</button>
+            <div style={{ ...S.addCard }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={S.addInput} placeholder="Add an item…" value={newItemText}
+                  onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                <button style={S.addBtn} onClick={addItem}>Add</button>
+              </div>
+              <input style={{ ...S.input, marginTop: 8 }} list="listsections" placeholder="Section (optional, e.g. Vegetables) — stays filled for batch adding"
+                value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+              <datalist id="listsections">
+                {Array.from(new Set(activeList.items.map((i) => i.section).filter(Boolean))).map((s) => <option key={s} value={s} />)}
+              </datalist>
             </div>
             {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items above.</div>}
             <div style={{ marginTop: 12 }}>
-              {activeList.items.map((it) => (
-                <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
-                  <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
-                  <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}>{it.text}</div>
-                  <button style={{ ...S.iconBtn, color: T.accent, fontWeight: 700 }} onClick={() => promoteItem(activeList, it)} title="Add to Tasks">➔ Task</button>
-                  <button style={S.iconBtn} onClick={() => deleteItem(activeList.id, it.id)} title="Remove">✕</button>
-                </div>
+              {sectionsOf(activeList).map(([sec, items]) => (
+                <section key={sec || "__none"}>
+                  {sec && (
+                    <h2 style={S.gTitle(false, false)}>
+                      <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(sec, dark, colorMap) }} />
+                      {sec} <span style={S.count}>{items.filter((i) => !i.checked).length}/{items.length}</span>
+                    </h2>
+                  )}
+                  {items.map((it) => (
+                    <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
+                      <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}
+                        onClick={() => editItemSection(activeList.id, it.id, it.section)} title="Tap to change section">{it.text}</div>
+                      <button style={{ ...S.iconBtn, color: T.accent, fontWeight: 700 }} onClick={() => promoteItem(activeList, it)} title="Add to Tasks">➔ Task</button>
+                      <button style={S.iconBtn} onClick={() => deleteItem(activeList.id, it.id)} title="Remove">✕</button>
+                    </div>
+                  ))}
+                </section>
               ))}
             </div>
-            <p style={{ fontSize: 12.5, color: T.mute, marginTop: 12, lineHeight: 1.5 }}>➔ Task copies an item into your Tasks inbox with category "{activeList.name}" — the item stays here, so the list remains reusable.</p>
+            <p style={{ fontSize: 12.5, color: T.mute, marginTop: 12, lineHeight: 1.5 }}>➔ Task copies an item into your Tasks inbox — category "{activeList.name}", sub category from its section. The item stays here, so the list remains reusable. Tap an item’s text to change its section.</p>
           </>
         )}
 

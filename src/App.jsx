@@ -21,6 +21,7 @@ const store =
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
 const PREFS_KEY = "taskmanager:prefs-v1";
+const LISTS_KEY = "taskmanager:lists-v1";
 
 /* ---------- date helpers ---------- */
 const pad = (n) => String(n).padStart(2, "0");
@@ -114,13 +115,19 @@ const catStyle = (name, dark, overrides) => {
 const dotColor = (name, dark, overrides) => `hsl(${hueFor(name, overrides)},${dark ? 50 : 60}%,${dark ? 62 : 42}%)`;
 const RECURRENCES = [["", "No repeat"], ["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["yearly", "Yearly"]];
 const REC_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" };
-const VIEWS = ["List", "Table", "Dashboard"];
+const NAV = ["Tasks", "Lists", "Dashboard", "Settings"];
+const NAV_ICON = { Tasks: "☑", Lists: "☰", Dashboard: "▤", Settings: "⚙" };
 
 export default function TaskManager() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dark, setDark] = useState(false);
-  const [view, setView] = useState("List");
+  const [view, setView] = useState("Tasks");
+  const [taskMode, setTaskMode] = useState("List");
+  const [lists, setLists] = useState([]);
+  const [activeListId, setActiveListId] = useState(null);
+  const [newListName, setNewListName] = useState("");
+  const [newItemText, setNewItemText] = useState("");
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox" };
   const [newTitle, setNewTitle] = useState("");
   const [draft, setDraft] = useState(blank);
@@ -164,12 +171,18 @@ export default function TaskManager() {
         if (!cancelled && p?.value) {
           const prefs = JSON.parse(p.value);
           setDark(prefs.dark === true);
-          if (VIEWS.includes(prefs.view)) setView(prefs.view);
+          if (NAV.includes(prefs.view)) setView(prefs.view);
+          else if (prefs.view === "List" || prefs.view === "Table") { setView("Tasks"); setTaskMode(prefs.view); }
+          if (prefs.taskMode === "List" || prefs.taskMode === "Table") setTaskMode(prefs.taskMode);
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
           if (prefs.catColors) setCatColors(prefs.catColors);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
       } catch (e) { /* defaults */ }
+      try {
+        const l = await withTimeout(store.get(LISTS_KEY), 2500);
+        if (!cancelled && l?.value) setLists(JSON.parse(l.value));
+      } catch (e) { /* no lists yet */ }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -180,11 +193,16 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, scriptUrl, lastSync, catColors, ...patch };
+    const p = { dark, view, taskMode, scriptUrl, lastSync, catColors, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
   const switchView = (v) => { setView(v); savePrefs({ view: v }); };
+  const switchTaskMode = (m) => { setTaskMode(m); savePrefs({ taskMode: m }); };
+  const persistLists = async (next) => {
+    setLists(next);
+    try { await store.set(LISTS_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
+  };
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2200); };
 
   /* derived */
@@ -383,7 +401,7 @@ export default function TaskManager() {
       const res = await fetch(scriptUrl.trim(), {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ mode: "push", tasks }),
+        body: JSON.stringify({ mode: "push", tasks, lists }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -415,6 +433,7 @@ export default function TaskManager() {
           createdAt: t.createdAt || today, completedAt: t.completedAt || "",
         }));
         persist(pulled);
+        if (Array.isArray(data.lists)) persistLists(data.lists);
         const now = new Date().toLocaleString();
         setLastSync(now); savePrefs({ lastSync: now });
         flash(`Pulled ${pulled.length} tasks from your sheet`);
@@ -457,6 +476,52 @@ export default function TaskManager() {
     if (!window.confirm("Delete ALL tasks? This cannot be undone.")) return;
     if (!window.confirm("Really sure? Consider Sync or CSV export first.")) return;
     persist([]);
+  };
+
+  /* ---------- lists ---------- */
+  const activeList = lists.find((l) => l.id === activeListId) || null;
+  const addList = () => {
+    const name = newListName.trim();
+    if (!name) return;
+    const l = { id: uid(), name, items: [], createdAt: today };
+    persistLists([l, ...lists]);
+    setNewListName("");
+    setActiveListId(l.id);
+  };
+  const renameList = (id) => {
+    const l = lists.find((x) => x.id === id);
+    const nn = window.prompt("Rename list", l ? l.name : "");
+    if (!nn || !nn.trim()) return;
+    persistLists(lists.map((x) => (x.id === id ? { ...x, name: nn.trim() } : x)));
+  };
+  const deleteList = (id) => {
+    const l = lists.find((x) => x.id === id);
+    if (!window.confirm(`Delete list "${l ? l.name : ""}" and its items?`)) return;
+    persistLists(lists.filter((x) => x.id !== id));
+    if (activeListId === id) setActiveListId(null);
+  };
+  const addItem = () => {
+    const text = newItemText.trim();
+    if (!text || !activeList) return;
+    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, checked: false }] } : l)));
+    setNewItemText("");
+  };
+  const toggleItem = (listId, itemId) =>
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, checked: !i.checked } : i)) } : l)));
+  const deleteItem = (listId, itemId) =>
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.filter((i) => i.id !== itemId) } : l)));
+  const resetList = (listId) => {
+    if (!window.confirm("Uncheck all items? (Great for reusing this list.)")) return;
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => ({ ...i, checked: false })) } : l)));
+    flash("List reset — ready to reuse");
+  };
+  const promoteItem = (list, item) => {
+    persist([{
+      id: uid(), title: item.text, done: false, createdAt: today, completedAt: "", nextId: "",
+      category: list.name, subCategory: "", dueDate: "", dueTime: "",
+      reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox",
+    }, ...tasks]);
+    flash(`Added to Tasks · category "${list.name}"`);
   };
 
   const copyCSV = () => {
@@ -619,22 +684,18 @@ export default function TaskManager() {
       <div style={S.wrap}>
         <header style={S.header}>
           <div>
-            <h1 style={S.h1}>Tasks</h1>
-            <p style={S.sub}>{open.length} open{doneList.length ? ` · ${doneList.length} done` : ""}</p>
+            <h1 style={S.h1}>{view === "Tasks" ? "Tasks" : view}</h1>
+            {view === "Tasks" && <p style={S.sub}>{open.length} open{doneList.length ? ` · ${doneList.length} done` : ""}</p>}
+            {view === "Lists" && <p style={S.sub}>{lists.length} list{lists.length === 1 ? "" : "s"}</p>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={{ ...S.round, borderColor: view === "Settings" ? T.accent : T.line, color: view === "Settings" ? T.accent : T.ink }} onClick={() => switchView("Settings")} aria-label="Settings">⚙</button>
+            <button style={S.round} onClick={syncPush} disabled={syncing} aria-label="Sync to Sheets" title="Sync to Sheets">{syncing ? "⧗" : "⇅"}</button>
             <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
           </div>
         </header>
 
-        {/* view tabs */}
-        <div style={S.tabs}>
-          {VIEWS.map((v) => <button key={v} style={S.tab(view === v)} onClick={() => switchView(v)}>{v}</button>)}
-        </div>
-
         {/* add card — everything inline, no hidden tab */}
-        {view !== "Dashboard" && view !== "Settings" && (
+        {view === "Tasks" && (
           <div style={S.addCard}>
             <div style={S.addRow}>
               <input style={S.addInput} placeholder="Add a task…" value={newTitle}
@@ -701,10 +762,17 @@ export default function TaskManager() {
         )}
 
         {/* search + filter (list & table) */}
-        {view !== "Dashboard" && view !== "Settings" && (
+        {view === "Tasks" && (
           <>
             <div style={S.toolRow}>
               <input style={S.search} placeholder="Search tasks…" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <div style={{ display: "flex", border: `1px solid ${T.line}`, borderRadius: 10, overflow: "hidden" }}>
+                {["List", "Table"].map((m) => (
+                  <button key={m} onClick={() => switchTaskMode(m)}
+                    style={{ border: "none", padding: "9px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                      background: taskMode === m ? T.accent : T.card, color: taskMode === m ? "#fff" : T.mute }}>{m}</button>
+                ))}
+              </div>
               <button style={{ ...S.footBtn, borderColor: filtersActive ? T.accent : T.line, color: filtersActive ? T.accent : T.ink }} onClick={() => setShowFilters(!showFilters)}>
                 Filter{filtersActive ? " •" : ""}
               </button>
@@ -734,7 +802,7 @@ export default function TaskManager() {
         )}
 
         {/* ---------- LIST VIEW ---------- */}
-        {view === "List" && (
+        {view === "Tasks" && taskMode === "List" && (
           <>
             {open.length === 0 && doneList.length === 0 && (
               <div style={S.empty}>{q || filtersActive ? "No tasks match. Try clearing search or filters." : "Nothing here yet. Add your first task above — it saves automatically."}</div>
@@ -761,7 +829,7 @@ export default function TaskManager() {
         )}
 
         {/* ---------- TABLE VIEW ---------- */}
-        {view === "Table" && (
+        {view === "Tasks" && taskMode === "Table" && (
           <div style={S.tableWrap}>
             <table style={S.table}>
               <thead>
@@ -798,6 +866,63 @@ export default function TaskManager() {
               </tbody>
             </table>
           </div>
+        )}
+
+        {/* ---------- LISTS VIEW ---------- */}
+        {view === "Lists" && !activeList && (
+          <>
+            <div style={{ ...S.addCard, display: "flex", gap: 8 }}>
+              <input style={S.addInput} placeholder="New list (e.g. Grocery, Travel packing)…" value={newListName}
+                onChange={(e) => setNewListName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addList()} />
+              <button style={S.addBtn} onClick={addList}>Create</button>
+            </div>
+            {lists.length === 0 && <div style={S.empty}>No lists yet. Create reusable checklists — groceries, packing, routines — and promote items to Tasks when they need a date.</div>}
+            {lists.map((l) => {
+              const done = l.items.filter((i) => i.checked).length;
+              return (
+                <div key={l.id} style={{ ...S.card(false), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
+                  <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
+                    <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{done}/{l.items.length} checked</div>
+                  </div>
+                  <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); renameList(l.id); }} title="Rename">✎</button>
+                  <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); deleteList(l.id); }} title="Delete">✕</button>
+                  <span style={{ color: T.mute, fontSize: 16 }}>›</span>
+                </div>
+              );
+            })}
+          </>
+        )}
+
+        {view === "Lists" && activeList && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+              <button style={S.footBtn} onClick={() => setActiveListId(null)}>‹ Lists</button>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 17 }}>{activeList.name}</div>
+                <div style={{ fontSize: 12.5, color: T.mute }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
+              </div>
+              <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>
+            </div>
+            <div style={{ ...S.addCard, display: "flex", gap: 8 }}>
+              <input style={S.addInput} placeholder="Add an item…" value={newItemText}
+                onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+              <button style={S.addBtn} onClick={addItem}>Add</button>
+            </div>
+            {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items above.</div>}
+            <div style={{ marginTop: 12 }}>
+              {activeList.items.map((it) => (
+                <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
+                  <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}>{it.text}</div>
+                  <button style={{ ...S.iconBtn, color: T.accent, fontWeight: 700 }} onClick={() => promoteItem(activeList, it)} title="Add to Tasks">➔ Task</button>
+                  <button style={S.iconBtn} onClick={() => deleteItem(activeList.id, it.id)} title="Remove">✕</button>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: 12.5, color: T.mute, marginTop: 12, lineHeight: 1.5 }}>➔ Task copies an item into your Tasks inbox with category "{activeList.name}" — the item stays here, so the list remains reusable.</p>
+          </>
         )}
 
         {/* ---------- DASHBOARD VIEW ---------- */}
@@ -967,13 +1092,17 @@ export default function TaskManager() {
         )}
       </div>
 
-      {/* footer */}
-      <div style={S.footer}>
-        <button style={{ ...S.footBtn, background: T.accent, color: "#fff", border: "none", opacity: syncing ? 0.6 : 1 }} onClick={syncPush} disabled={syncing}>
-          {syncing ? "Syncing…" : "⇅ Sync to Sheets"}
-        </button>
-        <button style={S.footBtn} onClick={() => setModal("export")}>CSV</button>
-        <button style={S.footBtn} onClick={() => switchView("Settings")} aria-label="Settings">⚙</button>
+      {/* bottom navigation */}
+      <div style={{ ...S.footer, justifyContent: "space-around", padding: "6px 8px calc(6px + env(safe-area-inset-bottom))" }}>
+        {NAV.map((v) => (
+          <button key={v} onClick={() => switchView(v)}
+            style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "4px 10px",
+              color: view === v ? T.accent : T.mute, fontWeight: view === v ? 700 : 500 }}>
+            <span style={{ fontSize: 18, lineHeight: 1 }}>{NAV_ICON[v]}</span>
+            <span style={{ fontSize: 11 }}>{v}</span>
+          </button>
+        ))}
       </div>
 
       {toast && <div style={S.toast}>{toast}</div>}

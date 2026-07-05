@@ -134,7 +134,7 @@ const recLabel = (r) => {
   return REC_LABEL[r] || r;
 };
 const NAV = ["Tasks", "Lists", "Dashboard", "Settings"];
-const FOCUS_KEYS = ["Overdue", "Today", "Tomorrow"];
+const FOCUS_KEYS = ["Overdue", "Today", "Tomorrow", "Inbox"];
 const GROUP_CAP = 6;
 const NAV_ICON = { Tasks: "☑", Lists: "☰", Dashboard: "▤", Settings: "⚙" };
 
@@ -356,7 +356,9 @@ export default function TaskManager() {
     if (!title) return;
     persist([{ id: uid(), title, done: false, createdAt: today, completedAt: "", ...draft }, ...tasks]);
     setNewTitle(""); setDraft(blank); setMoreFields(false);
-    flash("Task added");
+    const hiddenByFocus = focus && taskMode === "List" &&
+      ((draft.dueDate && draft.dueDate > tomorrow) || (!draft.dueDate && (draft.bucket === "Next week" || draft.bucket === "Someday")));
+    flash(hiddenByFocus ? "Added — scheduled for later (switch to All to see it)" : "Task added");
   };
 
   const toggle = (id) => {
@@ -607,7 +609,7 @@ export default function TaskManager() {
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => ({ ...i, checked: false })) } : l)));
     flash("List reset — ready to reuse");
   };
-  const toggleSelect = (itemId) => setSelectedIds({ ...selectedIds, [itemId]: !selectedIds[itemId] });
+  const toggleSelect = (itemId) => setSelectedIds((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
   const createTaskFromSelected = () => {
     if (!activeList) return;
     const sel = activeList.items.filter((i) => selectedIds[i.id]);
@@ -683,7 +685,7 @@ export default function TaskManager() {
     panel: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, marginTop: 10, padding: 12, display: "grid", gap: 10 },
     gTitle: (danger, bucket) => ({ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 12.5, letterSpacing: "0.08em", textTransform: "uppercase", color: danger ? T.danger : bucket ? T.accent : T.mute, margin: "20px 0 8px", display: "flex", alignItems: "center", gap: 8 }),
     count: { fontSize: 11, background: T.tagBg, color: T.ink, borderRadius: 999, padding: "1px 8px", fontWeight: 600 },
-    card: (done, edge, tint) => ({ background: tint || T.card, border: `1px solid ${T.line}`, borderLeft: `3px solid ${edge || T.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, boxShadow: T.shadow, transition: "opacity 0.2s" }),
+    card: (done, edge, tint) => ({ background: tint || T.card, borderTop: `1px solid ${T.line}`, borderRight: `1px solid ${T.line}`, borderBottom: `1px solid ${T.line}`, borderLeft: `3px solid ${edge || T.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, boxShadow: T.shadow, transition: "opacity 0.2s" }),
     check: (done) => ({ width: 22, height: 22, minWidth: 22, borderRadius: 11, border: `2px solid ${done ? T.accent : T.line}`, background: done ? T.accent : "transparent", color: "#fff", fontSize: 13, lineHeight: "18px", textAlign: "center", cursor: "pointer", marginTop: 2, padding: 0, transition: "background 0.15s, border-color 0.15s, transform 0.15s", transform: done ? "scale(1.05)" : "scale(1)" }),
     title: (done) => ({ fontSize: 15.5, fontWeight: 500, textDecoration: done ? "line-through" : "none", overflowWrap: "anywhere" }),
     meta: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5 },
@@ -799,7 +801,7 @@ export default function TaskManager() {
           {t.notes && (() => {
             const n = t.notes.split("\n").filter((l) => l.trim().startsWith("•")).length;
             return (
-              <button onClick={() => setOpenNotes({ ...openNotes, [t.id]: !openNotes[t.id] })}
+              <button onClick={() => setOpenNotes((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
                 style={{ ...S.tag(T.accentSoft, T.accent), border: "none", cursor: "pointer", fontFamily: "inherit" }}>
                 ☰ {n ? `${n} items` : "notes"} {openNotes[t.id] ? "▴" : "▾"}
               </button>
@@ -1028,7 +1030,7 @@ export default function TaskManager() {
                         </h2>
                         {items.map((t) => <TaskCard key={t.id} t={t} />)}
                         {!isCollapsed && !isExpanded && moreCount > 0 && (
-                          <button onClick={() => setExpandedGroups({ ...expandedGroups, [g.key]: true })}
+                          <button onClick={() => setExpandedGroups((prev) => ({ ...prev, [g.key]: true }))}
                             style={{ width: "100%", background: "none", border: `1px dashed ${T.line}`, borderRadius: 10, padding: "8px 0", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, color: T.mute }}>
                             Show {moreCount} more
                           </button>
@@ -1176,8 +1178,10 @@ export default function TaskManager() {
                   )}
                   {items.map((it) => selectMode ? (
                     <div key={it.id} onClick={() => toggleSelect(it.id)}
-                      style={{ ...S.card(false), alignItems: "center", cursor: "pointer",
-                        borderColor: selectedIds[it.id] ? T.accent : T.line,
+                      style={{ ...S.card(false, selectedIds[it.id] ? T.accent : T.line), alignItems: "center", cursor: "pointer",
+                        borderTop: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
+                        borderRight: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
+                        borderBottom: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
                         background: selectedIds[it.id] ? T.accentSoft : T.card }}>
                       <span style={{ ...S.check(!!selectedIds[it.id]), pointerEvents: "none" }}>{selectedIds[it.id] ? "✓" : ""}</span>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere" }}>{it.text}</div>

@@ -444,7 +444,9 @@ export default function TaskManager() {
       if (data.ok) {
         const now = new Date().toLocaleString();
         setLastSync(now); savePrefs({ lastSync: now });
-        flash(`Synced ${data.count} tasks to your sheet`);
+        const r = data.reminders;
+        const remNote = r && (r.created || r.removed) ? ` · reminders +${r.created}${r.removed ? ` −${r.removed}` : ""}` : "";
+        flash(`Synced ${data.count} tasks${remNote}`);
       } else throw new Error(data.error || "Script returned an error");
     } catch (e) {
       flash("Sync failed — see Settings for setup help");

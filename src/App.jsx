@@ -181,6 +181,7 @@ export default function TaskManager() {
   const [catColors, setCatColors] = useState({});
   const [pickerFor, setPickerFor] = useState(null);
   const csvRef = useRef(null);
+  const itemInputRef = useRef(null);
   const T = dark ? THEMES.dark : THEMES.light;
   const today = todayStr();
 
@@ -353,7 +354,7 @@ export default function TaskManager() {
   /* actions */
   const addTask = () => {
     const title = newTitle.trim();
-    if (!title) return;
+    if (!title) { flash("Type the task first"); return; }
     persist([{ id: uid(), title, done: false, createdAt: today, completedAt: "", ...draft }, ...tasks]);
     setNewTitle(""); setDraft(blank); setMoreFields(false);
     const hiddenByFocus = focus && taskMode === "List" &&
@@ -551,11 +552,13 @@ export default function TaskManager() {
   };
   const addItem = () => {
     const text = newItemText.trim();
-    if (!text || !activeList) return;
+    if (!activeList) return;
+    if (!text) { flash("Type the item in the top field first"); return; }
     const section = newItemSection.trim();
     const qty = newItemQty.trim(), unit = newItemUnit.trim();
     persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, qty, unit, checked: false }] } : l)));
     setNewItemText(""); setNewItemQty(""); // section & unit stay filled for batch adding
+    if (itemInputRef.current) itemInputRef.current.focus();
   };
   const editItemQty = (listId, itemId, cur) => {
     const s = window.prompt("Quantity (e.g. '2 kg', '3 packs' — blank to clear):", cur || "");
@@ -1140,14 +1143,14 @@ export default function TaskManager() {
               const n = Object.values(selectedIds).filter(Boolean).length;
               return (
                 <div style={{ ...S.addCard, display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ flex: 1, fontSize: 14, color: T.mute }}>{n ? `${n} item${n === 1 ? "" : "s"} selected` : "Tap items to select them"}</span>
+                  <span style={{ flex: 1, fontSize: 14, color: T.mute }}>{n ? `${n} item${n === 1 ? "" : "s"} selected` : "Tap items to select them (adding is paused — Cancel to add)"}</span>
                   <button style={{ ...S.addBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={createTaskFromSelected}>Create one task</button>
                 </div>
               );
             })()}
             {!selectMode && <div style={{ ...S.addCard }}>
               <div style={{ display: "flex", gap: 8 }}>
-                <input style={S.addInput} placeholder="Add an item…" value={newItemText}
+                <input ref={itemInputRef} style={S.addInput} placeholder="Add an item…" value={newItemText}
                   onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
                 <button style={S.addBtn} onClick={addItem}>Add</button>
               </div>

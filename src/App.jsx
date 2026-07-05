@@ -60,10 +60,10 @@ const fmtTime = (t) => {
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 /* ---------- CSV ---------- */
-const HEADERS = ["Task","Category","Sub Category","Due Date","Due Time","Reminder Date","Reminder Time","Recurrence","Bucket","Status","Created","Completed"];
+const HEADERS = ["Task","Category","Sub Category","Due Date","Due Time","Reminder Date","Reminder Time","Recurrence","Bucket","Status","Created","Completed","Notes"];
 const esc = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 const toCSV = (ts) => [HEADERS.join(","), ...ts.map((t) =>
-  [t.title, t.category, t.subCategory, t.dueDate, t.dueTime, t.reminderDate, t.reminderTime, t.recurrence, t.bucket, t.done ? "Done" : "Open", t.createdAt, t.completedAt].map(esc).join(",")
+  [t.title, t.category, t.subCategory, t.dueDate, t.dueTime, t.reminderDate, t.reminderTime, t.recurrence, t.bucket, t.done ? "Done" : "Open", t.createdAt, t.completedAt, t.notes].map(esc).join(",")
 )].join("\n");
 const parseCSV = (text) => {
   const rows = []; let row = [], f = "", q = false;
@@ -154,7 +154,10 @@ export default function TaskManager() {
   const [newItemSection, setNewItemSection] = useState("");
   const [newItemQty, setNewItemQty] = useState("");
   const [newItemUnit, setNewItemUnit] = useState("");
-  const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox" };
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState({});
+  const [openNotes, setOpenNotes] = useState({});
+  const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox", notes: "" };
   const [newTitle, setNewTitle] = useState("");
   const [draft, setDraft] = useState(blank);
   const [addFocus, setAddFocus] = useState(false);
@@ -190,7 +193,7 @@ export default function TaskManager() {
     (async () => {
       try {
         const r = await withTimeout(store.get(STORE_KEY), 2500);
-        if (!cancelled && r?.value) setTasks(JSON.parse(r.value).map((t) => ({ recurrence: "", bucket: "Inbox", completedAt: "", nextId: "", ...t })));
+        if (!cancelled && r?.value) setTasks(JSON.parse(r.value).map((t) => ({ recurrence: "", bucket: "Inbox", completedAt: "", nextId: "", notes: "", ...t })));
       } catch (e) { /* fresh start */ }
       try {
         const p = await withTimeout(store.get(PREFS_KEY), 2500);
@@ -423,6 +426,7 @@ export default function TaskManager() {
       done: (r[i("status")] || "").toLowerCase() === "done",
       createdAt: r[i("created")] || today,
       completedAt: r[i("completed")] || "",
+      notes: r[i("notes")] || "",
     }));
     persist([...imported, ...tasks]);
     setImportText(""); setModal(null);
@@ -469,7 +473,7 @@ export default function TaskManager() {
           reminderDate: t.reminderDate || "", reminderTime: t.reminderTime || "",
           recurrence: (t.recurrence || "").toLowerCase(), bucket: t.bucket || "Inbox",
           done: t.done === true || String(t.status).toLowerCase() === "done",
-          createdAt: t.createdAt || today, completedAt: t.completedAt || "",
+          createdAt: t.createdAt || today, completedAt: t.completedAt || "", notes: t.notes || "",
         }));
         persist(pulled);
         if (Array.isArray(data.lists)) persistLists(data.lists);
@@ -519,7 +523,7 @@ export default function TaskManager() {
 
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
-  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); }, [activeListId]);
+  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setSelectMode(false); setSelectedIds({}); }, [activeListId]);
 
   /* ---------- lists ---------- */
   const activeList = lists.find((l) => l.id === activeListId) || null;
@@ -602,6 +606,31 @@ export default function TaskManager() {
     if (!window.confirm("Uncheck all items? (Great for reusing this list.)")) return;
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => ({ ...i, checked: false })) } : l)));
     flash("List reset — ready to reuse");
+  };
+  const toggleSelect = (itemId) => setSelectedIds({ ...selectedIds, [itemId]: !selectedIds[itemId] });
+  const createTaskFromSelected = () => {
+    if (!activeList) return;
+    const sel = activeList.items.filter((i) => selectedIds[i.id]);
+    if (!sel.length) return;
+    const defName = `${activeList.name} – ${sel.length} item${sel.length === 1 ? "" : "s"}`;
+    const name = window.prompt("Name for this task:", defName);
+    if (name === null) return;
+    const bySec = {}, order = [];
+    sel.forEach((i) => { const s = i.section || ""; if (!(s in bySec)) { bySec[s] = []; order.push(s); } bySec[s].push(i); });
+    order.sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    const lines = [];
+    order.forEach((s) => {
+      if (s) lines.push(s + ":");
+      bySec[s].forEach((i) => lines.push(`• ${i.text}${i.qty || i.unit ? ` — ${[i.qty, i.unit].filter(Boolean).join(" ")}` : ""}`));
+    });
+    persist([{
+      id: uid(), title: name.trim() || defName, notes: lines.join("\n"),
+      category: activeList.name, subCategory: "", dueDate: "", dueTime: "",
+      reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox",
+      done: false, createdAt: today, completedAt: "", nextId: "",
+    }, ...tasks]);
+    setSelectMode(false); setSelectedIds({});
+    flash(`Task created with ${sel.length} items`);
   };
   const promoteItem = (list, item) => {
     persist([{
@@ -767,7 +796,19 @@ export default function TaskManager() {
           )}
           {t.recurrence && <span style={S.tag(T.tagBg, T.mute)}>↻ {recLabel(t.recurrence)}</span>}
           {t.reminderDate && <span style={S.tag(T.tagBg, T.mute)}>🔔 {fmtDate(t.reminderDate)}{t.reminderTime ? ` ${fmtTime(t.reminderTime)}` : ""}</span>}
+          {t.notes && (() => {
+            const n = t.notes.split("\n").filter((l) => l.trim().startsWith("•")).length;
+            return (
+              <button onClick={() => setOpenNotes({ ...openNotes, [t.id]: !openNotes[t.id] })}
+                style={{ ...S.tag(T.accentSoft, T.accent), border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+                ☰ {n ? `${n} items` : "notes"} {openNotes[t.id] ? "▴" : "▾"}
+              </button>
+            );
+          })()}
         </div>
+        {t.notes && openNotes[t.id] && (
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, color: T.mute, marginTop: 8, lineHeight: 1.55, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>{t.notes}</div>
+        )}
       </div>
       {!t.done && t.dueDate !== tomorrow && <button style={S.iconBtn} onClick={() => snooze(t.id)} aria-label="Move to tomorrow" title="Move to tomorrow">⇥</button>}
       <button style={S.iconBtn} onClick={() => setEditing({ ...t })} aria-label="Edit">✎</button>
@@ -1088,10 +1129,21 @@ export default function TaskManager() {
                 <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 17 }}>{activeList.name}</div>
                 <div style={{ fontSize: 12.5, color: T.mute }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
               </div>
-              <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>
-              <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>
+              {!selectMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
+              {!selectMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
+              {!selectMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
+              {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
             </div>
-            <div style={{ ...S.addCard }}>
+            {selectMode && (() => {
+              const n = Object.values(selectedIds).filter(Boolean).length;
+              return (
+                <div style={{ ...S.addCard, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ flex: 1, fontSize: 14, color: T.mute }}>{n ? `${n} item${n === 1 ? "" : "s"} selected` : "Tap items to select them"}</span>
+                  <button style={{ ...S.addBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={createTaskFromSelected}>Create one task</button>
+                </div>
+              );
+            })()}
+            {!selectMode && <div style={{ ...S.addCard }}>
               <div style={{ display: "flex", gap: 8 }}>
                 <input style={S.addInput} placeholder="Add an item…" value={newItemText}
                   onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
@@ -1111,7 +1163,7 @@ export default function TaskManager() {
               <datalist id="listunits">
                 {Array.from(new Set(["kg", "g", "L", "ml", "pcs", "pack", "box", "dozen", ...activeList.items.map((i) => i.unit).filter(Boolean)])).map((u) => <option key={u} value={u} />)}
               </datalist>
-            </div>
+            </div>}
             {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items above.</div>}
             <div style={{ marginTop: 12 }}>
               {sectionsOf(activeList).map(([sec, items]) => (
@@ -1122,7 +1174,16 @@ export default function TaskManager() {
                       {sec} <span style={S.count}>{items.filter((i) => !i.checked).length}/{items.length}</span>
                     </h2>
                   )}
-                  {items.map((it) => (
+                  {items.map((it) => selectMode ? (
+                    <div key={it.id} onClick={() => toggleSelect(it.id)}
+                      style={{ ...S.card(false), alignItems: "center", cursor: "pointer",
+                        borderColor: selectedIds[it.id] ? T.accent : T.line,
+                        background: selectedIds[it.id] ? T.accentSoft : T.card }}>
+                      <span style={{ ...S.check(!!selectedIds[it.id]), pointerEvents: "none" }}>{selectedIds[it.id] ? "✓" : ""}</span>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere" }}>{it.text}</div>
+                      {(it.qty || it.unit) && <span style={S.tag(T.tagBg, T.mute)}>{[it.qty, it.unit].filter(Boolean).join(" ")}</span>}
+                    </div>
+                  ) : (
                     <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
                       <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}
@@ -1363,6 +1424,11 @@ export default function TaskManager() {
             <div style={{ marginBottom: 10 }}>
               <label style={S.label}>Task</label>
               <input style={S.input} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={S.label}>Notes / items</label>
+              <textarea style={{ ...S.textarea, height: 90 }} value={editing.notes || ""} placeholder="Anything extra — items from a list land here"
+                onChange={(e) => setEditing({ ...editing, notes: e.target.value })} />
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               {editFields(editing, setEditing)}

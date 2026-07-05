@@ -121,7 +121,7 @@ const catStyle = (name, dark, overrides) => {
     : { background: `hsl(${h},52%,91%)`, color: `hsl(${h},65%,29%)` };
 };
 const dotColor = (name, dark, overrides) => `hsl(${hueFor(name, overrides)},${dark ? 50 : 60}%,${dark ? 62 : 42}%)`;
-const RECURRENCES = [["", "No repeat"], ["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["yearly", "Yearly"], ["custom", "Custom\u2026"]];
+const RECURRENCES = [["", "No repeat"], ["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["yearly", "Yearly"], ["custom", "Custom…"]];
 const REC_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" };
 const recLabel = (r) => {
   if (!r) return "";
@@ -134,6 +134,8 @@ const recLabel = (r) => {
   return REC_LABEL[r] || r;
 };
 const NAV = ["Tasks", "Lists", "Dashboard", "Settings"];
+const FOCUS_KEYS = ["Overdue", "Today", "Tomorrow"];
+const GROUP_CAP = 6;
 const NAV_ICON = { Tasks: "☑", Lists: "☰", Dashboard: "▤", Settings: "⚙" };
 
 export default function TaskManager() {
@@ -142,6 +144,9 @@ export default function TaskManager() {
   const [dark, setDark] = useState(false);
   const [view, setView] = useState("Tasks");
   const [taskMode, setTaskMode] = useState("List");
+  const [focus, setFocus] = useState(true);
+  const [collapsed, setCollapsed] = useState({});
+  const [expandedGroups, setExpandedGroups] = useState({});
   const [lists, setLists] = useState([]);
   const [activeListId, setActiveListId] = useState(null);
   const [newListName, setNewListName] = useState("");
@@ -195,6 +200,8 @@ export default function TaskManager() {
           if (NAV.includes(prefs.view)) setView(prefs.view);
           else if (prefs.view === "List" || prefs.view === "Table") { setView("Tasks"); setTaskMode(prefs.view); }
           if (prefs.taskMode === "List" || prefs.taskMode === "Table") setTaskMode(prefs.taskMode);
+          if (prefs.focus === false) setFocus(false);
+          if (prefs.collapsed && typeof prefs.collapsed === "object") setCollapsed(prefs.collapsed);
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
           if (prefs.catColors) setCatColors(prefs.catColors);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
@@ -214,12 +221,17 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, taskMode, scriptUrl, lastSync, catColors, ...patch };
+    const p = { dark, view, taskMode, focus, collapsed, scriptUrl, lastSync, catColors, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
   const switchView = (v) => { setView(v); savePrefs({ view: v }); };
   const switchTaskMode = (m) => { setTaskMode(m); savePrefs({ taskMode: m }); };
+  const switchFocus = (f) => { setFocus(f); savePrefs({ focus: f }); };
+  const toggleCollapse = (key) => {
+    const next = { ...collapsed, [key]: !collapsed[key] };
+    setCollapsed(next); savePrefs({ collapsed: next });
+  };
   const persistLists = async (next) => {
     setLists(next);
     try { await store.set(LISTS_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
@@ -384,6 +396,10 @@ export default function TaskManager() {
     }
   };
 
+  const snooze = (id) => {
+    persist(tasks.map((t) => (t.id === id ? { ...t, dueDate: tomorrow } : t)));
+    flash("Moved to tomorrow");
+  };
   const remove = (id) => persist(tasks.filter((t) => t.id !== id));
   const saveEdit = () => { persist(tasks.map((t) => (t.id === editing.id ? editing : t))); setEditing(null); };
   const clearDone = () => persist(tasks.filter((t) => !t.done));
@@ -751,6 +767,7 @@ export default function TaskManager() {
           {t.reminderDate && <span style={S.tag(T.tagBg, T.mute)}>🔔 {fmtDate(t.reminderDate)}{t.reminderTime ? ` ${fmtTime(t.reminderTime)}` : ""}</span>}
         </div>
       </div>
+      {!t.done && t.dueDate !== tomorrow && <button style={S.iconBtn} onClick={() => snooze(t.id)} aria-label="Move to tomorrow" title="Move to tomorrow">⇥</button>}
       <button style={S.iconBtn} onClick={() => setEditing({ ...t })} aria-label="Edit">✎</button>
       <button style={S.iconBtn} onClick={() => remove(t.id)} aria-label="Delete">✕</button>
     </div>
@@ -922,15 +939,63 @@ export default function TaskManager() {
         {/* ---------- LIST VIEW ---------- */}
         {view === "Tasks" && taskMode === "List" && (
           <>
-            {open.length === 0 && doneList.length === 0 && (
-              <div style={S.empty}>{q || filtersActive ? "No tasks match. Try clearing search or filters." : "Nothing here yet. Add your first task above — it saves automatically."}</div>
-            )}
-            {groups.map((g) => (
-              <section key={g.key}>
-                <h2 style={S.gTitle(g.danger, g.bucket || g.accent)}>{g.key} <span style={S.count}>{g.items.length}</span></h2>
-                {g.items.map((t) => <TaskCard key={t.id} t={t} />)}
-              </section>
-            ))}
+            {(() => {
+              const focusGroups = groups.filter((g) => FOCUS_KEYS.includes(g.key));
+              const laterGroups = groups.filter((g) => !FOCUS_KEYS.includes(g.key));
+              const hiddenCount = laterGroups.reduce((n, g) => n + g.items.length, 0);
+              const shownGroups = focus ? focusGroups : groups;
+              return (
+                <>
+                  {/* focus / all toggle */}
+                  {(groups.length > 0 || doneList.length > 0) && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+                      <div style={{ display: "flex", border: `1px solid ${T.line}`, borderRadius: 999, overflow: "hidden" }}>
+                        {[["Focus", true], ["All", false]].map(([lbl, val]) => (
+                          <button key={lbl} onClick={() => switchFocus(val)}
+                            style={{ border: "none", padding: "6px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                              background: focus === val ? T.accent : T.card, color: focus === val ? "#fff" : T.mute }}>{lbl}</button>
+                        ))}
+                      </div>
+                      {focus && hiddenCount > 0 && (
+                        <button onClick={() => switchFocus(false)}
+                          style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: T.mute }}>
+                          {hiddenCount} more scheduled ›
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {open.length === 0 && doneList.length === 0 && (
+                    <div style={S.empty}>{q || filtersActive ? "No tasks match. Try clearing search or filters." : "Nothing here yet. Add your first task above — it saves automatically."}</div>
+                  )}
+                  {focus && open.length > 0 && focusGroups.length === 0 && (
+                    <div style={S.empty}>All clear for now — nothing overdue, due today or tomorrow.{hiddenCount > 0 ? ` ${hiddenCount} task${hiddenCount === 1 ? "" : "s"} scheduled for later.` : ""}</div>
+                  )}
+
+                  {shownGroups.map((g) => {
+                    const isCollapsed = !!collapsed[g.key];
+                    const isExpanded = !!expandedGroups[g.key];
+                    const items = isCollapsed ? [] : isExpanded ? g.items : g.items.slice(0, GROUP_CAP);
+                    const moreCount = g.items.length - GROUP_CAP;
+                    return (
+                      <section key={g.key}>
+                        <h2 style={{ ...S.gTitle(g.danger, g.bucket || g.accent), cursor: "pointer", userSelect: "none" }} onClick={() => toggleCollapse(g.key)}>
+                          <span style={{ fontWeight: 400, fontSize: 11 }}>{isCollapsed ? "▸" : "▾"}</span>
+                          {g.key} <span style={S.count}>{g.items.length}</span>
+                        </h2>
+                        {items.map((t) => <TaskCard key={t.id} t={t} />)}
+                        {!isCollapsed && !isExpanded && moreCount > 0 && (
+                          <button onClick={() => setExpandedGroups({ ...expandedGroups, [g.key]: true })}
+                            style={{ width: "100%", background: "none", border: `1px dashed ${T.line}`, borderRadius: 10, padding: "8px 0", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13, color: T.mute }}>
+                            Show {moreCount} more
+                          </button>
+                        )}
+                      </section>
+                    );
+                  })}
+                </>
+              );
+            })()}
             {doneList.length > 0 && (
               <section>
                 <h2 style={{ ...S.gTitle(false, false), cursor: "pointer" }} onClick={() => setShowDone(!showDone)}>

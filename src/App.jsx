@@ -36,9 +36,17 @@ const addMonths = (s, n) => {
   d.setDate(Math.min(day, last));
   return toStr(d);
 };
-const advance = (s, r) =>
-  r === "daily" ? addDays(s, 1) : r === "weekly" ? addDays(s, 7)
-  : r === "monthly" ? addMonths(s, 1) : r === "yearly" ? addMonths(s, 12) : s;
+const advance = (s, r) => {
+  if (r && r.startsWith("custom:")) {
+    const parts = r.split(":");
+    const n = Math.max(1, parseInt(parts[1], 10) || 1);
+    const unit = parts[2] || "days";
+    return unit === "weeks" ? addDays(s, 7 * n) : unit === "months" ? addMonths(s, n) : addDays(s, n);
+  }
+  return r === "daily" ? addDays(s, 1) : r === "weekly" ? addDays(s, 7)
+    : r === "monthly" ? addMonths(s, 1) : r === "quarterly" ? addMonths(s, 3)
+    : r === "yearly" ? addMonths(s, 12) : s;
+};
 
 const fmtDate = (s) => s ? new Date(s + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "";
 const fmtShort = (s) => s ? new Date(s + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
@@ -82,11 +90,11 @@ const THEMES = {
     bg: "#F7F6F1", card: "#FFFFFF", ink: "#20241F", mute: "#7C8078", line: "#DDDCD2",
     accent: "#136A55", accentSoft: "#E3EEE9", danger: "#BC4325", dangerSoft: "#F7E6DF",
     amber: "#B07C1F", amberSoft: "#F5ECD8",
-    tagBg: "#EFEEE7", overlay: "rgba(32,36,31,0.45)", shadow: "0 1px 2px rgba(32,36,31,0.05)",
+    tagBg: "#EFEEE7", overlay: "rgba(32,36,31,0.45)", shadow: "0 1px 3px rgba(32,36,31,0.07)",
     footBg: "rgba(247,246,241,0.95)", rowAlt: "#FBFAF6",
   },
   dark: {
-    bg: "#151815", card: "#1E221E", ink: "#E9E8E1", mute: "#9AA096", line: "#343A34",
+    bg: "#131613", card: "#1D221D", ink: "#ECEBE3", mute: "#9DA399", line: "#333B33",
     accent: "#3FAE8C", accentSoft: "#1E332C", danger: "#E06A4A", dangerSoft: "#3A251F",
     amber: "#D9A644", amberSoft: "#332B18",
     tagBg: "#2A2F2A", overlay: "rgba(0,0,0,0.6)", shadow: "0 1px 3px rgba(0,0,0,0.4)",
@@ -113,8 +121,18 @@ const catStyle = (name, dark, overrides) => {
     : { background: `hsl(${h},52%,91%)`, color: `hsl(${h},65%,29%)` };
 };
 const dotColor = (name, dark, overrides) => `hsl(${hueFor(name, overrides)},${dark ? 50 : 60}%,${dark ? 62 : 42}%)`;
-const RECURRENCES = [["", "No repeat"], ["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["yearly", "Yearly"]];
-const REC_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" };
+const RECURRENCES = [["", "No repeat"], ["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["yearly", "Yearly"], ["custom", "Custom\u2026"]];
+const REC_LABEL = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" };
+const recLabel = (r) => {
+  if (!r) return "";
+  if (r.startsWith("custom:")) {
+    const parts = r.split(":");
+    const n = Math.max(1, parseInt(parts[1], 10) || 1);
+    const unit = parts[2] || "days";
+    return `Every ${n} ${n === 1 ? unit.slice(0, -1) : unit}`;
+  }
+  return REC_LABEL[r] || r;
+};
 const NAV = ["Tasks", "Lists", "Dashboard", "Settings"];
 const NAV_ICON = { Tasks: "☑", Lists: "☰", Dashboard: "▤", Settings: "⚙" };
 
@@ -129,6 +147,8 @@ export default function TaskManager() {
   const [newListName, setNewListName] = useState("");
   const [newItemText, setNewItemText] = useState("");
   const [newItemSection, setNewItemSection] = useState("");
+  const [newItemQty, setNewItemQty] = useState("");
+  const [newItemUnit, setNewItemUnit] = useState("");
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox" };
   const [newTitle, setNewTitle] = useState("");
   const [draft, setDraft] = useState(blank);
@@ -250,7 +270,7 @@ export default function TaskManager() {
 
   const groups = filterStatus === "Done" ? [] : [
     { key: "Overdue", danger: true, items: dated.filter((t) => t.dueDate < today) },
-    { key: "Today", items: dated.filter((t) => t.dueDate === today) },
+    { key: "Today", accent: true, items: dated.filter((t) => t.dueDate === today) },
     { key: "Tomorrow", items: dated.filter((t) => t.dueDate === tomorrow) },
     { key: "This week", items: dated.filter((t) => t.dueDate > tomorrow && t.dueDate <= weekEnd) },
     { key: "Later", items: dated.filter((t) => t.dueDate > weekEnd) },
@@ -342,7 +362,7 @@ export default function TaskManager() {
             { ...t, id: newId, done: false, completedAt: "", dueDate: nextDue, reminderDate: nextRem, createdAt: today, nextId: "" },
             ...next.map((x) => (x.id === id ? { ...x, nextId: newId } : x)),
           ];
-          flash(`Repeats ${REC_LABEL[t.recurrence].toLowerCase()} — next: ${fmtDate(nextDue)}`);
+          flash(`Repeats ${recLabel(t.recurrence).toLowerCase()} — next: ${fmtDate(nextDue)}`);
         }
       }
       persist(next);
@@ -481,7 +501,7 @@ export default function TaskManager() {
 
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
-  useEffect(() => { setNewItemText(""); setNewItemSection(""); }, [activeListId]);
+  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); }, [activeListId]);
 
   /* ---------- lists ---------- */
   const activeList = lists.find((l) => l.id === activeListId) || null;
@@ -509,8 +529,16 @@ export default function TaskManager() {
     const text = newItemText.trim();
     if (!text || !activeList) return;
     const section = newItemSection.trim();
-    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, checked: false }] } : l)));
-    setNewItemText(""); // keep the section filled — items are usually added in batches per section
+    const qty = newItemQty.trim(), unit = newItemUnit.trim();
+    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, qty, unit, checked: false }] } : l)));
+    setNewItemText(""); setNewItemQty(""); // section & unit stay filled for batch adding
+  };
+  const editItemQty = (listId, itemId, cur) => {
+    const s = window.prompt("Quantity (e.g. '2 kg', '3 packs' — blank to clear):", cur || "");
+    if (s === null) return;
+    const parts = s.trim().split(/\s+/);
+    const qty = parts.shift() || "", unit = parts.join(" ");
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, qty, unit } : i)) } : l)));
   };
   const editItemSection = (listId, itemId, current) => {
     const s = window.prompt("Section for this item (blank for none):", current || "");
@@ -538,7 +566,7 @@ export default function TaskManager() {
     </style></head><body>
     <h1>${esc(list.name)}</h1><div class="d">${new Date().toLocaleDateString()}</div>
     ${sectionsOf(list).map(([s, items]) =>
-      `${s ? `<h2>${esc(s)}</h2>` : ""}<ul>${items.map((i) => `<li class="${i.checked ? "c" : ""}">${i.checked ? "☑" : "☐"} ${esc(i.text)}</li>`).join("")}</ul>`
+      `${s ? `<h2>${esc(s)}</h2>` : ""}<ul>${items.map((i) => `<li class="${i.checked ? "c" : ""}">${i.checked ? "☑" : "☐"} ${esc(i.text)}${i.qty || i.unit ? " — " + esc([i.qty, i.unit].filter(Boolean).join(" ")) : ""}</li>`).join("")}</ul>`
     ).join("")}
     </body></html>`;
     const f = document.createElement("iframe");
@@ -559,7 +587,7 @@ export default function TaskManager() {
   };
   const promoteItem = (list, item) => {
     persist([{
-      id: uid(), title: item.text, done: false, createdAt: today, completedAt: "", nextId: "",
+      id: uid(), title: item.qty || item.unit ? `${item.text} (${[item.qty, item.unit].filter(Boolean).join(" ")})` : item.text, done: false, createdAt: today, completedAt: "", nextId: "",
       category: list.name, subCategory: item.section || "", dueDate: "", dueTime: "",
       reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox",
     }, ...tasks]);
@@ -608,8 +636,8 @@ export default function TaskManager() {
     panel: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, marginTop: 10, padding: 12, display: "grid", gap: 10 },
     gTitle: (danger, bucket) => ({ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 12.5, letterSpacing: "0.08em", textTransform: "uppercase", color: danger ? T.danger : bucket ? T.accent : T.mute, margin: "20px 0 8px", display: "flex", alignItems: "center", gap: 8 }),
     count: { fontSize: 11, background: T.tagBg, color: T.ink, borderRadius: 999, padding: "1px 8px", fontWeight: 600 },
-    card: (done) => ({ background: T.card, border: `1px solid ${T.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, boxShadow: T.shadow }),
-    check: (done) => ({ width: 22, height: 22, minWidth: 22, borderRadius: 7, border: `2px solid ${done ? T.accent : T.line}`, background: done ? T.accent : "transparent", color: "#fff", fontSize: 13, lineHeight: "18px", textAlign: "center", cursor: "pointer", marginTop: 2, padding: 0 }),
+    card: (done, edge, tint) => ({ background: tint || T.card, border: `1px solid ${T.line}`, borderLeft: `3px solid ${edge || T.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, boxShadow: T.shadow, transition: "opacity 0.2s" }),
+    check: (done) => ({ width: 22, height: 22, minWidth: 22, borderRadius: 11, border: `2px solid ${done ? T.accent : T.line}`, background: done ? T.accent : "transparent", color: "#fff", fontSize: 13, lineHeight: "18px", textAlign: "center", cursor: "pointer", marginTop: 2, padding: 0, transition: "background 0.15s, border-color 0.15s, transform 0.15s", transform: done ? "scale(1.05)" : "scale(1)" }),
     title: (done) => ({ fontSize: 15.5, fontWeight: 500, textDecoration: done ? "line-through" : "none", overflowWrap: "anywhere" }),
     meta: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5 },
     tag: (bg, fg) => ({ fontSize: 12, background: bg, color: fg, borderRadius: 6, padding: "2px 8px", fontWeight: 500 }),
@@ -676,9 +704,26 @@ export default function TaskManager() {
       </div>
       <div>
         <label style={S.label}>Repeat</label>
-        <select style={S.input} value={obj.recurrence} onChange={(e) => set({ ...obj, recurrence: e.target.value })}>
+        <select style={S.input}
+          value={obj.recurrence.startsWith("custom:") ? "custom" : obj.recurrence}
+          onChange={(e) => set({ ...obj, recurrence: e.target.value === "custom" ? "custom:2:weeks" : e.target.value })}>
           {RECURRENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
+        {obj.recurrence.startsWith("custom:") && (
+          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 12.5, color: T.mute }}>Every</span>
+            <input style={{ ...S.input, width: 56 }} type="number" min="1"
+              value={parseInt(obj.recurrence.split(":")[1], 10) || 1}
+              onChange={(e) => set({ ...obj, recurrence: `custom:${Math.max(1, parseInt(e.target.value, 10) || 1)}:${obj.recurrence.split(":")[2] || "days"}` })} />
+            <select style={{ ...S.input, width: "auto" }}
+              value={obj.recurrence.split(":")[2] || "days"}
+              onChange={(e) => set({ ...obj, recurrence: `custom:${parseInt(obj.recurrence.split(":")[1], 10) || 1}:${e.target.value}` })}>
+              <option value="days">days</option>
+              <option value="weeks">weeks</option>
+              <option value="months">months</option>
+            </select>
+          </div>
+        )}
       </div>
       <div>
         <label style={S.label}>If no date, list under</label>
@@ -690,7 +735,7 @@ export default function TaskManager() {
   );
 
   const TaskCard = ({ t }) => (
-    <div style={S.card(t.done)}>
+    <div style={S.card(t.done, t.category ? dotColor(t.category, dark, colorMap) : T.line, !t.done && t.dueDate && t.dueDate < today ? T.dangerSoft : null)}>
       <button style={S.check(t.done)} onClick={() => toggle(t.id)} aria-label={t.done ? "Mark open" : "Mark done"}>{t.done ? "✓" : ""}</button>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={S.title(t.done)}>{t.title}</div>
@@ -702,7 +747,7 @@ export default function TaskManager() {
               {fmtDate(t.dueDate)}{t.dueTime ? ` · ${fmtTime(t.dueTime)}` : ""}
             </span>
           )}
-          {t.recurrence && <span style={S.tag(T.tagBg, T.mute)}>↻ {REC_LABEL[t.recurrence]}</span>}
+          {t.recurrence && <span style={S.tag(T.tagBg, T.mute)}>↻ {recLabel(t.recurrence)}</span>}
           {t.reminderDate && <span style={S.tag(T.tagBg, T.mute)}>🔔 {fmtDate(t.reminderDate)}{t.reminderTime ? ` ${fmtTime(t.reminderTime)}` : ""}</span>}
         </div>
       </div>
@@ -735,6 +780,20 @@ export default function TaskManager() {
             <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
           </div>
         </header>
+        {view === "Tasks" && (() => {
+          const dueT = tasks.filter((t) => !t.done && t.dueDate === today).length;
+          const doneT = tasks.filter((t) => t.done && t.completedAt === today).length;
+          const total = dueT + doneT;
+          if (!total) return null;
+          return (
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: T.mute, marginBottom: 4 }}>Today: {doneT} of {total} done</div>
+              <div style={{ height: 6, background: T.tagBg, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${(doneT / total) * 100}%`, height: "100%", background: T.accent, borderRadius: 4, transition: "width 0.4s" }} />
+              </div>
+            </div>
+          );
+        })()}
 
         {/* add card — everything inline, no hidden tab */}
         {view === "Tasks" && (
@@ -785,9 +844,26 @@ export default function TaskManager() {
                       </div>
                       <div>
                         <label style={S.label}>Repeat</label>
-                        <select style={S.input} value={draft.recurrence} onChange={(e) => setDraft({ ...draft, recurrence: e.target.value })}>
+                        <select style={S.input}
+                          value={draft.recurrence.startsWith("custom:") ? "custom" : draft.recurrence}
+                          onChange={(e) => setDraft({ ...draft, recurrence: e.target.value === "custom" ? "custom:2:weeks" : e.target.value })}>
                           {RECURRENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                         </select>
+                        {draft.recurrence.startsWith("custom:") && (
+                          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+                            <span style={{ fontSize: 12.5, color: T.mute }}>Every</span>
+                            <input style={{ ...S.input, width: 56 }} type="number" min="1"
+                              value={parseInt(draft.recurrence.split(":")[1], 10) || 1}
+                              onChange={(e) => setDraft({ ...draft, recurrence: `custom:${Math.max(1, parseInt(e.target.value, 10) || 1)}:${draft.recurrence.split(":")[2] || "days"}` })} />
+                            <select style={{ ...S.input, width: "auto" }}
+                              value={draft.recurrence.split(":")[2] || "days"}
+                              onChange={(e) => setDraft({ ...draft, recurrence: `custom:${parseInt(draft.recurrence.split(":")[1], 10) || 1}:${e.target.value}` })}>
+                              <option value="days">days</option>
+                              <option value="weeks">weeks</option>
+                              <option value="months">months</option>
+                            </select>
+                          </div>
+                        )}
                       </div>
                       <div>
                         <label style={S.label}>If no date, list under</label>
@@ -851,7 +927,7 @@ export default function TaskManager() {
             )}
             {groups.map((g) => (
               <section key={g.key}>
-                <h2 style={S.gTitle(g.danger, g.bucket)}>{g.key} <span style={S.count}>{g.items.length}</span></h2>
+                <h2 style={S.gTitle(g.danger, g.bucket || g.accent)}>{g.key} <span style={S.count}>{g.items.length}</span></h2>
                 {g.items.map((t) => <TaskCard key={t.id} t={t} />)}
               </section>
             ))}
@@ -898,7 +974,7 @@ export default function TaskManager() {
                     <td style={{ ...S.td, whiteSpace: "nowrap", color: t.dueDate && t.dueDate < today && !t.done ? T.danger : "inherit" }}>
                       {t.dueDate ? `${fmtShort(t.dueDate)}${t.dueTime ? " " + fmtTime(t.dueTime) : ""}` : (t.bucket && t.bucket !== "Inbox" ? t.bucket : "—")}
                     </td>
-                    <td style={S.td}>{t.recurrence ? "↻ " + REC_LABEL[t.recurrence] : "—"}</td>
+                    <td style={S.td}>{t.recurrence ? "↻ " + recLabel(t.recurrence) : "—"}</td>
                     <td style={{ ...S.td, whiteSpace: "nowrap" }}>
                       <button style={S.iconBtn} onClick={() => setEditing({ ...t })}>✎</button>
                       <button style={S.iconBtn} onClick={() => remove(t.id)}>✕</button>
@@ -954,10 +1030,19 @@ export default function TaskManager() {
                   onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
                 <button style={S.addBtn} onClick={addItem}>Add</button>
               </div>
-              <input style={{ ...S.input, marginTop: 8 }} list="listsections" placeholder="Section (optional, e.g. Vegetables) — stays filled for batch adding"
-                value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (e.g. Vegetables)"
+                  value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
+                  value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                <input style={{ ...S.input, flex: 1.2 }} list="listunits" placeholder="Unit"
+                  value={newItemUnit} onChange={(e) => setNewItemUnit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+              </div>
               <datalist id="listsections">
                 {Array.from(new Set(activeList.items.map((i) => i.section).filter(Boolean))).map((s) => <option key={s} value={s} />)}
+              </datalist>
+              <datalist id="listunits">
+                {Array.from(new Set(["kg", "g", "L", "ml", "pcs", "pack", "box", "dozen", ...activeList.items.map((i) => i.unit).filter(Boolean)])).map((u) => <option key={u} value={u} />)}
               </datalist>
             </div>
             {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items above.</div>}
@@ -975,6 +1060,9 @@ export default function TaskManager() {
                       <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}
                         onClick={() => editItemSection(activeList.id, it.id, it.section)} title="Tap to change section">{it.text}</div>
+                      <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                        onClick={() => editItemQty(activeList.id, it.id, [it.qty, it.unit].filter(Boolean).join(" "))}
+                        title="Tap to edit quantity">{[it.qty, it.unit].filter(Boolean).join(" ") || "+ qty"}</button>
                       <button style={{ ...S.iconBtn, color: T.accent, fontWeight: 700 }} onClick={() => promoteItem(activeList, it)} title="Add to Tasks">➔ Task</button>
                       <button style={S.iconBtn} onClick={() => deleteItem(activeList.id, it.id)} title="Remove">✕</button>
                     </div>

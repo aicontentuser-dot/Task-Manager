@@ -104,6 +104,23 @@ const THEMES = {
 
 const BUCKETS = ["Inbox", "Next week", "Someday"];
 
+/* ---------- smart list types ----------
+   Every list has sections; types add extra per-item fields. */
+const LIST_TYPES = {
+  checklist: { label: "Checklist", icon: "☑", extras: [] },
+  grocery: { label: "Grocery", icon: "🛒", extras: ["qty", "unit"] },
+  packing: { label: "Packing", icon: "🎒", extras: ["qty"] },
+  wishlist: { label: "Wishlist", icon: "⭐", extras: ["url", "price"] },
+  custom: { label: "Custom", icon: "⚙", extras: null },
+};
+const CUSTOM_CHOICES = ["qty", "unit", "url", "price"];
+const listExtras = (l) => {
+  if (!l) return [];
+  if (l.type === "custom") return l.fields || [];
+  return (LIST_TYPES[l.type] || LIST_TYPES.checklist).extras;
+};
+const inferType = (l) => (l.items || []).some((i) => i.qty || i.unit) ? "grocery" : "checklist";
+
 /* ---------- automatic category colors ----------
    Each category/sub name is hashed to a hue, so the same name always
    gets the same color — no setup needed. Settings can override (cycle)
@@ -150,6 +167,10 @@ export default function TaskManager() {
   const [lists, setLists] = useState([]);
   const [activeListId, setActiveListId] = useState(null);
   const [newListName, setNewListName] = useState("");
+  const [newListType, setNewListType] = useState("checklist");
+  const [newListFields, setNewListFields] = useState([]);
+  const [newItemUrl, setNewItemUrl] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
   const [newItemText, setNewItemText] = useState("");
   const [newItemSection, setNewItemSection] = useState("");
   const [newItemQty, setNewItemQty] = useState("");
@@ -213,7 +234,7 @@ export default function TaskManager() {
       } catch (e) { /* defaults */ }
       try {
         const l = await withTimeout(store.get(LISTS_KEY), 2500);
-        if (!cancelled && l?.value) setLists(JSON.parse(l.value));
+        if (!cancelled && l?.value) setLists(JSON.parse(l.value).map((x) => ({ ...x, type: x.type || inferType(x), fields: x.fields || [] })));
       } catch (e) { /* no lists yet */ }
       if (!cancelled) setLoading(false);
     })();
@@ -479,7 +500,16 @@ export default function TaskManager() {
           createdAt: t.createdAt || today, completedAt: t.completedAt || "", notes: t.notes || "",
         }));
         persist(pulled);
-        if (Array.isArray(data.lists)) persistLists(data.lists);
+        if (Array.isArray(data.lists)) persistLists(data.lists.map((L) => {
+          let type = L.type || "", fields = Array.isArray(L.fields) ? L.fields : [];
+          if (type.startsWith("custom")) {
+            const rest = type.split(":")[1] || "";
+            if (rest) fields = rest.split("|").filter(Boolean);
+            type = "custom";
+          }
+          if (!LIST_TYPES[type]) type = inferType(L);
+          return { ...L, type, fields, items: (L.items || []).map((i) => ({ section: "", qty: "", unit: "", url: "", price: "", ...i })) };
+        }));
         const now = new Date().toLocaleString();
         setLastSync(now); savePrefs({ lastSync: now });
         flash(`Pulled ${pulled.length} tasks from your sheet`);
@@ -526,17 +556,38 @@ export default function TaskManager() {
 
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
-  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setSelectMode(false); setSelectedIds({}); }, [activeListId]);
+  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); }, [activeListId]);
 
   /* ---------- lists ---------- */
   const activeList = lists.find((l) => l.id === activeListId) || null;
   const addList = () => {
     const name = newListName.trim();
     if (!name) return;
-    const l = { id: uid(), name, items: [], createdAt: today };
+    const l = { id: uid(), name, items: [], createdAt: today, type: newListType, fields: newListType === "custom" ? newListFields : [] };
     persistLists([l, ...lists]);
-    setNewListName("");
+    setNewListName(""); setNewListType("checklist"); setNewListFields([]);
     setActiveListId(l.id);
+  };
+  const setListType = (id, type) => {
+    persistLists(lists.map((l) => (l.id === id ? { ...l, type, fields: type === "custom" && !(l.fields || []).length ? listExtras(l) : l.fields || [] } : l)));
+  };
+  const toggleListField = (id, f) => {
+    persistLists(lists.map((l) => {
+      if (l.id !== id) return l;
+      const fields = (l.fields || []).includes(f) ? (l.fields || []).filter((x) => x !== f) : [...(l.fields || []), f];
+      return { ...l, fields };
+    }));
+  };
+  const editItemUrl = (listId, itemId, cur) => {
+    const s = window.prompt("Link (blank to clear):", cur || "https://");
+    if (s === null) return;
+    const url = s.trim() === "https://" ? "" : s.trim();
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, url } : i)) } : l)));
+  };
+  const editItemPrice = (listId, itemId, cur) => {
+    const s = window.prompt("Price (any format, blank to clear):", cur || "");
+    if (s === null) return;
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, price: s.trim() } : i)) } : l)));
   };
   const renameList = (id) => {
     const l = lists.find((x) => x.id === id);
@@ -556,8 +607,9 @@ export default function TaskManager() {
     if (!text) { flash("Type the item in the top field first"); return; }
     const section = newItemSection.trim();
     const qty = newItemQty.trim(), unit = newItemUnit.trim();
-    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, qty, unit, checked: false }] } : l)));
-    setNewItemText(""); setNewItemQty(""); // section & unit stay filled for batch adding
+    const url = newItemUrl.trim(), price = newItemPrice.trim();
+    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, qty, unit, url, price, checked: false }] } : l)));
+    setNewItemText(""); setNewItemQty(""); setNewItemUrl(""); setNewItemPrice(""); // section & unit stay filled for batch adding
     if (itemInputRef.current) itemInputRef.current.focus();
   };
   const editItemQty = (listId, itemId, cur) => {
@@ -590,10 +642,11 @@ export default function TaskManager() {
       h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.08em;color:#555;margin:18px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px}
       ul{list-style:none;padding:0;margin:0}li{padding:4px 0;font-size:15px}
       .c{color:#999;text-decoration:line-through}
+      .u{font-size:11px;color:#888;margin-left:22px;word-break:break-all}
     </style></head><body>
     <h1>${esc(list.name)}</h1><div class="d">${new Date().toLocaleDateString()}</div>
     ${sectionsOf(list).map(([s, items]) =>
-      `${s ? `<h2>${esc(s)}</h2>` : ""}<ul>${items.map((i) => `<li class="${i.checked ? "c" : ""}">${i.checked ? "☑" : "☐"} ${esc(i.text)}${i.qty || i.unit ? " — " + esc([i.qty, i.unit].filter(Boolean).join(" ")) : ""}</li>`).join("")}</ul>`
+      `${s ? `<h2>${esc(s)}</h2>` : ""}<ul>${items.map((i) => `<li class="${i.checked ? "c" : ""}">${i.checked ? "☑" : "☐"} ${esc(i.text)}${i.qty || i.unit ? " — " + esc([i.qty, i.unit].filter(Boolean).join(" ")) : ""}${i.price ? " — " + esc(i.price) : ""}${i.url ? `<div class="u">${esc(i.url)}</div>` : ""}</li>`).join("")}</ul>`
     ).join("")}
     </body></html>`;
     const f = document.createElement("iframe");
@@ -626,7 +679,10 @@ export default function TaskManager() {
     const lines = [];
     order.forEach((s) => {
       if (s) lines.push(s + ":");
-      bySec[s].forEach((i) => lines.push(`• ${i.text}${i.qty || i.unit ? ` — ${[i.qty, i.unit].filter(Boolean).join(" ")}` : ""}`));
+      bySec[s].forEach((i) => {
+        lines.push(`• ${i.text}${i.qty || i.unit ? ` — ${[i.qty, i.unit].filter(Boolean).join(" ")}` : ""}${i.price ? ` — ${i.price}` : ""}`);
+        if (i.url) lines.push(`   ${i.url}`);
+      });
     });
     persist([{
       id: uid(), title: name.trim() || defName, notes: lines.join("\n"),
@@ -638,8 +694,12 @@ export default function TaskManager() {
     flash(`Task created with ${sel.length} items`);
   };
   const promoteItem = (list, item) => {
+    const noteBits = [];
+    if (item.price) noteBits.push(`Price: ${item.price}`);
+    if (item.url) noteBits.push(item.url);
     persist([{
       id: uid(), title: item.qty || item.unit ? `${item.text} (${[item.qty, item.unit].filter(Boolean).join(" ")})` : item.text, done: false, createdAt: today, completedAt: "", nextId: "",
+      notes: noteBits.join("\n"),
       category: list.name, subCategory: item.section || "", dueDate: "", dueTime: "",
       reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox",
     }, ...tasks]);
@@ -1102,10 +1162,27 @@ export default function TaskManager() {
         {/* ---------- LISTS VIEW ---------- */}
         {view === "Lists" && !activeList && (
           <>
-            <div style={{ ...S.addCard, display: "flex", gap: 8 }}>
-              <input style={S.addInput} placeholder="New list (e.g. Grocery, Travel packing)…" value={newListName}
-                onChange={(e) => setNewListName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addList()} />
-              <button style={S.addBtn} onClick={addList}>Create</button>
+            <div style={{ ...S.addCard }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={S.addInput} placeholder="New list (e.g. Grocery, Travel packing)…" value={newListName}
+                  onChange={(e) => setNewListName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addList()} />
+                <button style={S.addBtn} onClick={addList}>Create</button>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {Object.entries(LIST_TYPES).map(([k, v]) => (
+                  <button key={k} style={S.qChip(newListType === k)} onClick={() => setNewListType(k)}>{v.icon} {v.label}</button>
+                ))}
+              </div>
+              {newListType === "custom" && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: T.mute }}>Item fields:</span>
+                  {CUSTOM_CHOICES.map((f) => (
+                    <button key={f} style={S.qChip(newListFields.includes(f))}
+                      onClick={() => setNewListFields(newListFields.includes(f) ? newListFields.filter((x) => x !== f) : [...newListFields, f])}>{f}</button>
+                  ))}
+                  <span style={{ fontSize: 12, color: T.mute }}>(sections always available)</span>
+                </div>
+              )}
             </div>
             {lists.length === 0 && <div style={S.empty}>No lists yet. Create reusable checklists — groceries, packing, routines — and promote items to Tasks when they need a date.</div>}
             {lists.map((l) => {
@@ -1115,7 +1192,7 @@ export default function TaskManager() {
                   <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
-                    <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{done}/{l.items.length} checked</div>
+                    <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{(LIST_TYPES[l.type] || LIST_TYPES.checklist).icon} {(LIST_TYPES[l.type] || LIST_TYPES.checklist).label} · {done}/{l.items.length} checked</div>
                   </div>
                   <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); renameList(l.id); }} title="Rename">✎</button>
                   <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); deleteList(l.id); }} title="Delete">✕</button>
@@ -1139,6 +1216,18 @@ export default function TaskManager() {
               {!selectMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
               {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
             </div>
+            {!selectMode && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+                <span style={{ fontSize: 12, color: T.mute }}>Type:</span>
+                <select value={activeList.type || "checklist"} onChange={(e) => setListType(activeList.id, e.target.value)}
+                  style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
+                  {Object.entries(LIST_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                </select>
+                {activeList.type === "custom" && CUSTOM_CHOICES.map((f) => (
+                  <button key={f} style={S.qChip((activeList.fields || []).includes(f))} onClick={() => toggleListField(activeList.id, f)}>{f}</button>
+                ))}
+              </div>
+            )}
             {selectMode && (() => {
               const n = Object.values(selectedIds).filter(Boolean).length;
               return (
@@ -1154,14 +1243,27 @@ export default function TaskManager() {
                   onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
                 <button style={S.addBtn} onClick={addItem}>Add</button>
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (e.g. Vegetables)"
-                  value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
-                  value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                <input style={{ ...S.input, flex: 1.2 }} list="listunits" placeholder="Unit"
-                  value={newItemUnit} onChange={(e) => setNewItemUnit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-              </div>
+              {(() => {
+                const ex = listExtras(activeList);
+                return (
+                  <>
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (optional)"
+                        value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                      {ex.includes("qty") && <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
+                        value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
+                      {ex.includes("unit") && <input style={{ ...S.input, flex: 1.2 }} list="listunits" placeholder="Unit"
+                        value={newItemUnit} onChange={(e) => setNewItemUnit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
+                      {ex.includes("price") && <input style={{ ...S.input, flex: 1.2 }} placeholder="Price"
+                        value={newItemPrice} onChange={(e) => setNewItemPrice(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
+                    </div>
+                    {ex.includes("url") && (
+                      <input style={{ ...S.input, marginTop: 8 }} type="url" placeholder="Link (https://…)"
+                        value={newItemUrl} onChange={(e) => setNewItemUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                    )}
+                  </>
+                );
+              })()}
               <datalist id="listsections">
                 {Array.from(new Set(activeList.items.map((i) => i.section).filter(Boolean))).map((s) => <option key={s} value={s} />)}
               </datalist>
@@ -1189,15 +1291,30 @@ export default function TaskManager() {
                       <span style={{ ...S.check(!!selectedIds[it.id]), pointerEvents: "none" }}>{selectedIds[it.id] ? "✓" : ""}</span>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere" }}>{it.text}</div>
                       {(it.qty || it.unit) && <span style={S.tag(T.tagBg, T.mute)}>{[it.qty, it.unit].filter(Boolean).join(" ")}</span>}
+                      {it.price && <span style={S.tag(T.tagBg, T.mute)}>{it.price}</span>}
                     </div>
                   ) : (
                     <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
                       <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}
                         onClick={() => editItemSection(activeList.id, it.id, it.section)} title="Tap to change section">{it.text}</div>
-                      <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                        onClick={() => editItemQty(activeList.id, it.id, [it.qty, it.unit].filter(Boolean).join(" "))}
-                        title="Tap to edit quantity">{[it.qty, it.unit].filter(Boolean).join(" ") || "+ qty"}</button>
+                      {(listExtras(activeList).includes("qty") || it.qty || it.unit) && (
+                        <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                          onClick={() => editItemQty(activeList.id, it.id, [it.qty, it.unit].filter(Boolean).join(" "))}
+                          title="Tap to edit quantity">{[it.qty, it.unit].filter(Boolean).join(" ") || "+ qty"}</button>
+                      )}
+                      {(listExtras(activeList).includes("price") || it.price) && (
+                        <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                          onClick={() => editItemPrice(activeList.id, it.id, it.price)}
+                          title="Tap to edit price">{it.price || "+ price"}</button>
+                      )}
+                      {it.url && (
+                        <a href={it.url} target="_blank" rel="noopener noreferrer"
+                          style={{ ...S.tag(T.accentSoft, T.accent), textDecoration: "none", whiteSpace: "nowrap" }} title={it.url}>↗</a>
+                      )}
+                      {listExtras(activeList).includes("url") && (
+                        <button style={S.iconBtn} onClick={() => editItemUrl(activeList.id, it.id, it.url)} title={it.url ? "Edit link" : "Add link"}>🔗</button>
+                      )}
                       <button style={{ ...S.iconBtn, color: T.accent, fontWeight: 700 }} onClick={() => promoteItem(activeList, it)} title="Add to Tasks">➔ Task</button>
                       <button style={S.iconBtn} onClick={() => deleteItem(activeList.id, it.id)} title="Remove">✕</button>
                     </div>

@@ -176,6 +176,10 @@ export default function TaskManager() {
   const [newItemQty, setNewItemQty] = useState("");
   const [newItemUnit, setNewItemUnit] = useState("");
   const [selectMode, setSelectMode] = useState(false);
+  const [reorderMode, setReorderMode] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [autoSync, setAutoSync] = useState(false);
+  const autoTimer = useRef(null);
   const [selectedIds, setSelectedIds] = useState({});
   const [openNotes, setOpenNotes] = useState({});
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox", notes: "" };
@@ -229,6 +233,7 @@ export default function TaskManager() {
           if (prefs.collapsed && typeof prefs.collapsed === "object") setCollapsed(prefs.collapsed);
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
           if (prefs.catColors) setCatColors(prefs.catColors);
+          if (prefs.autoSync === true) setAutoSync(true);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
       } catch (e) { /* defaults */ }
@@ -242,11 +247,11 @@ export default function TaskManager() {
   }, []);
 
   const persist = async (next) => {
-    setTasks(next);
+    setTasks(next); setDirty(true);
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, taskMode, focus, collapsed, scriptUrl, lastSync, catColors, ...patch };
+    const p = { dark, view, taskMode, focus, collapsed, scriptUrl, lastSync, catColors, autoSync, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
@@ -258,7 +263,7 @@ export default function TaskManager() {
     setCollapsed(next); savePrefs({ collapsed: next });
   };
   const persistLists = async (next) => {
-    setLists(next);
+    setLists(next); setDirty(true);
     try { await store.set(LISTS_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2200); };
@@ -278,6 +283,7 @@ export default function TaskManager() {
     const names = Array.from(new Set([
       ...tasks.map((t) => t.category),
       ...tasks.map((t) => t.subCategory),
+      ...lists.map((l) => l.name),
     ].filter(Boolean))).sort();
     const map = {}, taken = new Set();
     names.forEach((n) => {
@@ -290,7 +296,7 @@ export default function TaskManager() {
       map[n] = idx; taken.add(idx);
     });
     return map;
-  }, [tasks, catColors]);
+  }, [tasks, lists, catColors]);
 
   const q = search.trim().toLowerCase();
   const visible = tasks.filter((t) =>
@@ -473,6 +479,7 @@ export default function TaskManager() {
         const now = new Date().toLocaleString();
         setLastSync(now); savePrefs({ lastSync: now });
         const r = data.reminders;
+        setDirty(false);
         const remNote = r && (r.created || r.removed) ? ` · reminders +${r.created}${r.removed ? ` −${r.removed}` : ""}` : "";
         flash(`Synced ${data.count} tasks${remNote}`);
       } else throw new Error(data.error || "Script returned an error");
@@ -512,6 +519,7 @@ export default function TaskManager() {
         }));
         const now = new Date().toLocaleString();
         setLastSync(now); savePrefs({ lastSync: now });
+        setDirty(false);
         flash(`Pulled ${pulled.length} tasks from your sheet`);
         setModal(null);
       } else throw new Error(data.error || "Bad response");
@@ -556,7 +564,15 @@ export default function TaskManager() {
 
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
-  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); }, [activeListId]);
+  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); setReorderMode(false); }, [activeListId]);
+
+  /* auto-sync: quietly push a few seconds after the last change */
+  useEffect(() => {
+    if (loading || !autoSync || !dirty || !scriptUrl.trim() || syncing) return;
+    clearTimeout(autoTimer.current);
+    autoTimer.current = setTimeout(() => { syncPush(); }, 8000);
+    return () => clearTimeout(autoTimer.current);
+  }, [tasks, lists, autoSync, dirty, loading]);
 
   /* ---------- lists ---------- */
   const activeList = lists.find((l) => l.id === activeListId) || null;
@@ -576,6 +592,20 @@ export default function TaskManager() {
       if (l.id !== id) return l;
       const fields = (l.fields || []).includes(f) ? (l.fields || []).filter((x) => x !== f) : [...(l.fields || []), f];
       return { ...l, fields };
+    }));
+  };
+  const moveItem = (listId, itemId, dir) => {
+    persistLists(lists.map((l) => {
+      if (l.id !== listId) return l;
+      const items = [...l.items];
+      const idx = items.findIndex((i) => i.id === itemId);
+      if (idx < 0) return l;
+      const sec = items[idx].section || "";
+      let j = idx + dir;
+      while (j >= 0 && j < items.length && (items[j].section || "") !== sec) j += dir;
+      if (j < 0 || j >= items.length) return l;
+      const tmp = items[idx]; items[idx] = items[j]; items[j] = tmp;
+      return { ...l, items };
     }));
   };
   const editItemUrl = (listId, itemId, cur) => {
@@ -901,7 +931,10 @@ export default function TaskManager() {
             {view === "Lists" && <p style={S.sub}>{lists.length} list{lists.length === 1 ? "" : "s"}</p>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={S.round} onClick={syncPush} disabled={syncing} aria-label="Sync to Sheets" title="Sync to Sheets">{syncing ? "⧗" : "⇅"}</button>
+            <button style={{ ...S.round, position: "relative", borderColor: dirty ? T.accent : T.line }} onClick={syncPush} disabled={syncing} aria-label="Sync to Sheets" title={dirty ? "Unsynced changes — tap to sync" : "Sync to Sheets"}>
+              {syncing ? "⧗" : "⇅"}
+              {dirty && !syncing && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: 4, background: T.accent }} />}
+            </button>
             <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
           </div>
         </header>
@@ -1188,7 +1221,7 @@ export default function TaskManager() {
             {lists.map((l) => {
               const done = l.items.filter((i) => i.checked).length;
               return (
-                <div key={l.id} style={{ ...S.card(false), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
+                <div key={l.id} style={{ ...S.card(false, dotColor(l.name, dark, colorMap)), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
                   <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
@@ -1211,12 +1244,13 @@ export default function TaskManager() {
                 <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 17 }}>{activeList.name}</div>
                 <div style={{ fontSize: 12.5, color: T.mute }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
               </div>
-              {!selectMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
-              {!selectMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
-              {!selectMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
+              {!selectMode && !reorderMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
+              {!selectMode && <button style={S.footBtn} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
+              {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
+              {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
               {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
             </div>
-            {!selectMode && (
+            {!selectMode && !reorderMode && (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
                 <span style={{ fontSize: 12, color: T.mute }}>Type:</span>
                 <select value={activeList.type || "checklist"} onChange={(e) => setListType(activeList.id, e.target.value)}
@@ -1237,9 +1271,9 @@ export default function TaskManager() {
                 </div>
               );
             })()}
-            {!selectMode && <div style={{ ...S.addCard }}>
+            {!selectMode && !reorderMode && <div style={{ ...S.addCard, borderColor: T.accent, borderWidth: 1.5, boxShadow: `0 1px 6px ${dark ? "rgba(63,174,140,0.15)" : "rgba(19,106,85,0.12)"}` }}>
               <div style={{ display: "flex", gap: 8 }}>
-                <input ref={itemInputRef} style={S.addInput} placeholder="Add an item…" value={newItemText}
+                <input ref={itemInputRef} style={{ ...S.addInput, fontWeight: 500 }} placeholder="＋ Add an item…" value={newItemText}
                   onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
                 <button style={S.addBtn} onClick={addItem}>Add</button>
               </div>
@@ -1247,7 +1281,8 @@ export default function TaskManager() {
                 const ex = listExtras(activeList);
                 return (
                   <>
-                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 600, color: T.mute, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10 }}>Details (optional)</div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 4, opacity: 0.85 }}>
                       <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (optional)"
                         value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
                       {ex.includes("qty") && <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
@@ -1281,7 +1316,14 @@ export default function TaskManager() {
                       {sec} <span style={S.count}>{items.filter((i) => !i.checked).length}/{items.length}</span>
                     </h2>
                   )}
-                  {items.map((it) => selectMode ? (
+                  {items.map((it) => reorderMode ? (
+                    <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere", opacity: it.checked ? 0.55 : 1 }}>{it.text}</div>
+                      {(it.qty || it.unit) && <span style={S.tag(T.tagBg, T.mute)}>{[it.qty, it.unit].filter(Boolean).join(" ")}</span>}
+                      <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={() => moveItem(activeList.id, it.id, -1)} aria-label="Move up">↑</button>
+                      <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={() => moveItem(activeList.id, it.id, 1)} aria-label="Move down">↓</button>
+                    </div>
+                  ) : selectMode ? (
                     <div key={it.id} onClick={() => toggleSelect(it.id)}
                       style={{ ...S.card(false, selectedIds[it.id] ? T.accent : T.line), alignItems: "center", cursor: "pointer",
                         borderTop: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
@@ -1471,6 +1513,10 @@ export default function TaskManager() {
               <input style={S.input} placeholder="https://script.google.com/macros/s/…/exec"
                 value={scriptUrl} onChange={(e) => setScriptUrl(e.target.value)} onBlur={() => savePrefs({ scriptUrl })} />
               <p style={{ fontSize: 12.5, color: T.mute, margin: "6px 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <span style={{ fontSize: 14 }}>Auto-sync (push ~8s after changes)</span>
+                <button style={S.footBtn} onClick={() => { const v = !autoSync; setAutoSync(v); savePrefs({ autoSync: v }); }}>{autoSync ? "On" : "Off"}</button>
+              </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button style={S.addBtn} onClick={() => { savePrefs({ scriptUrl }); syncPush(); }} disabled={syncing}>{syncing ? "Syncing…" : "Push to sheet"}</button>
                 <button style={S.footBtn} onClick={() => { savePrefs({ scriptUrl }); syncPull(); }} disabled={syncing}>Pull from sheet</button>

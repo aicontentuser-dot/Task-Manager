@@ -48,6 +48,45 @@ const advance = (s, r) => {
     : r === "yearly" ? addMonths(s, 12) : s;
 };
 
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const nextWeekday = (from, wd) => {
+  const d = new Date(from + "T00:00:00");
+  let diff = (wd - d.getDay() + 7) % 7;
+  if (diff === 0) diff = 7;
+  return addDays(from, diff);
+};
+const parseQuickAdd = (raw, today, ignored) => {
+  let title = " " + raw + " ";
+  const out = { dueDate: "", dueTime: "", recurrence: "", bucket: "", matches: [] };
+  const skip = ignored || {};
+  const eat = (re, key, label, apply) => {
+    const m = title.match(re);
+    if (!m) return;
+    if (skip[key]) return; // leave text intact when user dismissed this chip
+    apply(m);
+    out.matches.push({ key, label: label(m) });
+    title = title.replace(re, " ");
+  };
+  const wdIdx = (w) => WEEKDAYS.findIndex((x) => x.startsWith(w.toLowerCase()));
+  eat(/\bevery\s+(\d+)\s+(day|week|month)s?\b/i, "rec", (m) => `↻ every ${m[1]} ${m[2]}s`, (m) => { out.recurrence = `custom:${m[1]}:${m[2]}s`; });
+  eat(/\bevery\s+(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(?:day|sday|nesday|urday)?\b/i, "rec", (m) => `↻ weekly`, (m) => { out.recurrence = "weekly"; const i = wdIdx(m[1]); if (i >= 0) out.dueDate = nextWeekday(today, i); });
+  eat(/\b(daily|every\s?day)\b/i, "rec", () => "↻ Daily", () => { out.recurrence = "daily"; });
+  eat(/\b(weekly|every\s?week)\b/i, "rec", () => "↻ Weekly", () => { out.recurrence = "weekly"; });
+  eat(/\b(monthly|every\s?month)\b/i, "rec", () => "↻ Monthly", () => { out.recurrence = "monthly"; });
+  eat(/\b(quarterly)\b/i, "rec", () => "↻ Quarterly", () => { out.recurrence = "quarterly"; });
+  eat(/\b(yearly|annually|every\s?year)\b/i, "rec", () => "↻ Yearly", () => { out.recurrence = "yearly"; });
+  eat(/\btoday\b/i, "date", () => "Today", () => { out.dueDate = today; });
+  eat(/\b(tomorrow|tmrw|tmr)\b/i, "date", () => "Tomorrow", () => { out.dueDate = addDays(today, 1); });
+  eat(/\bnext\s?week\b/i, "date", () => "Next week", () => { out.bucket = "Next week"; });
+  eat(/\bsomeday\b/i, "date", () => "Someday", () => { out.bucket = "Someday"; });
+  eat(/\b(?:next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i, "date", (m) => m[1][0].toUpperCase() + m[1].slice(1), (m) => { out.dueDate = nextWeekday(today, wdIdx(m[1])); });
+  eat(/\b(?:at\s+)?(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\b/i, "time", (m) => `${m[1]}${m[2] ? ":" + m[2] : ""} ${m[3].toUpperCase()}`, (m) => { let h = (+m[1]) % 12; if (/pm/i.test(m[3])) h += 12; out.dueTime = `${pad(h)}:${m[2] || "00"}`; });
+  eat(/\b([01]?\d|2[0-3]):([0-5]\d)\b/, "time", (m) => m[0], (m) => { out.dueTime = `${pad(+m[1])}:${m[2]}`; });
+  if (out.dueTime && !out.dueDate && !out.bucket) { out.dueDate = today; out.matches.push({ key: "date", label: "Today" }); }
+  out.title = title.replace(/\s+/g, " ").trim();
+  return out;
+};
+
 const fmtDate = (s) => s ? new Date(s + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "";
 const fmtShort = (s) => s ? new Date(s + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
 const dayLabel = (s) => new Date(s + "T00:00:00").toLocaleDateString(undefined, { weekday: "short" });
@@ -184,6 +223,7 @@ export default function TaskManager() {
   const [openNotes, setOpenNotes] = useState({});
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox", notes: "" };
   const [newTitle, setNewTitle] = useState("");
+  const [ignoredParses, setIgnoredParses] = useState({});
   const [draft, setDraft] = useState(blank);
   const [addFocus, setAddFocus] = useState(false);
   const [moreFields, setMoreFields] = useState(false);
@@ -267,6 +307,7 @@ export default function TaskManager() {
     try { await store.set(LISTS_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2200); };
+  const flashUndo = (m, fn) => { const t = { msg: m, fn }; setToast(t); setTimeout(() => setToast((cur) => (cur === t ? "" : cur)), 5000); };
 
   /* derived */
   const categories = useMemo(() => ["All", ...Array.from(new Set(tasks.map((t) => t.category).filter(Boolean))).sort()], [tasks]);
@@ -379,16 +420,25 @@ export default function TaskManager() {
   }, [tasks, today, weekEnd]);
 
   /* actions */
+  const parsed = useMemo(() => parseQuickAdd(newTitle, today, ignoredParses), [newTitle, today, ignoredParses]);
   const addTask = () => {
-    const title = newTitle.trim();
-    if (!title) { flash("Type the task first"); return; }
-    persist([{ id: uid(), title, done: false, createdAt: today, completedAt: "", ...draft }, ...tasks]);
-    setNewTitle(""); setDraft(blank); setMoreFields(false);
+    if (!newTitle.trim()) { flash("Type the task first"); return; }
+    const title = parsed.title || newTitle.trim();
+    const dueDate = draft.dueDate || parsed.dueDate;
+    const t = {
+      id: uid(), title, done: false, createdAt: today, completedAt: "", nextId: "", notes: draft.notes || "",
+      category: draft.category, subCategory: draft.subCategory,
+      dueDate, dueTime: draft.dueTime || parsed.dueTime,
+      reminderDate: draft.reminderDate, reminderTime: draft.reminderTime,
+      recurrence: draft.recurrence || parsed.recurrence,
+      bucket: parsed.bucket || draft.bucket,
+    };
+    persist([t, ...tasks]);
+    setNewTitle(""); setDraft(blank); setMoreFields(false); setIgnoredParses({});
     const hiddenByFocus = focus && taskMode === "List" &&
-      ((draft.dueDate && draft.dueDate > tomorrow) || (!draft.dueDate && (draft.bucket === "Next week" || draft.bucket === "Someday")));
+      ((t.dueDate && t.dueDate > tomorrow) || (!t.dueDate && (t.bucket === "Next week" || t.bucket === "Someday")));
     flash(hiddenByFocus ? "Added — scheduled for later (switch to All to see it)" : "Task added");
   };
-
   const toggle = (id) => {
     const t = tasks.find((x) => x.id === id);
     if (!t) return;
@@ -407,10 +457,13 @@ export default function TaskManager() {
             { ...t, id: newId, done: false, completedAt: "", dueDate: nextDue, reminderDate: nextRem, createdAt: today, nextId: "" },
             ...next.map((x) => (x.id === id ? { ...x, nextId: newId } : x)),
           ];
-          flash(`Repeats ${recLabel(t.recurrence).toLowerCase()} — next: ${fmtDate(nextDue)}`);
+          flash("");
+          var recMsg = `Done · repeats ${recLabel(t.recurrence).toLowerCase()} — next: ${fmtDate(nextDue)}`;
         }
       }
+      const prevTasks = tasks;
       persist(next);
+      flashUndo(typeof recMsg === "string" ? recMsg : "Completed", () => persist(prevTasks));
     } else {
       /* un-completing: also remove the occurrence this completion spawned,
          so undo is a true undo with no duplicates left behind */
@@ -433,7 +486,11 @@ export default function TaskManager() {
     persist(tasks.map((t) => (t.id === id ? { ...t, dueDate: tomorrow } : t)));
     flash("Moved to tomorrow");
   };
-  const remove = (id) => persist(tasks.filter((t) => t.id !== id));
+  const remove = (id) => {
+    const prev = tasks;
+    persist(tasks.filter((t) => t.id !== id));
+    flashUndo("Task deleted", () => persist(prev));
+  };
   const saveEdit = () => { persist(tasks.map((t) => (t.id === editing.id ? editing : t))); setEditing(null); };
   const clearDone = () => persist(tasks.filter((t) => !t.done));
 
@@ -654,7 +711,7 @@ export default function TaskManager() {
     if (s === null) return;
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, section: s.trim() } : i)) } : l)));
   };
-  const sectionsOf = (list) => {
+  const sectionsOf = (list, keepOrder) => {
     const map = {}, order = [];
     list.items.forEach((it) => {
       const s = it.section || "";
@@ -662,6 +719,7 @@ export default function TaskManager() {
       map[s].push(it);
     });
     order.sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    if (!keepOrder) order.forEach((s) => map[s].sort((a, b) => (a.checked ? 1 : 0) - (b.checked ? 1 : 0)));
     return order.map((s) => [s, map[s]]);
   };
   const printList = (list) => {
@@ -675,7 +733,7 @@ export default function TaskManager() {
       .u{font-size:11px;color:#888;margin-left:22px;word-break:break-all}
     </style></head><body>
     <h1>${esc(list.name)}</h1><div class="d">${new Date().toLocaleDateString()}</div>
-    ${sectionsOf(list).map(([s, items]) =>
+    ${sectionsOf(list, true).map(([s, items]) =>
       `${s ? `<h2>${esc(s)}</h2>` : ""}<ul>${items.map((i) => `<li class="${i.checked ? "c" : ""}">${i.checked ? "☑" : "☐"} ${esc(i.text)}${i.qty || i.unit ? " — " + esc([i.qty, i.unit].filter(Boolean).join(" ")) : ""}${i.price ? " — " + esc(i.price) : ""}${i.url ? `<div class="u">${esc(i.url)}</div>` : ""}</li>`).join("")}</ul>`
     ).join("")}
     </body></html>`;
@@ -688,8 +746,11 @@ export default function TaskManager() {
   };
   const toggleItem = (listId, itemId) =>
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, checked: !i.checked } : i)) } : l)));
-  const deleteItem = (listId, itemId) =>
+  const deleteItem = (listId, itemId) => {
+    const prev = lists;
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.filter((i) => i.id !== itemId) } : l)));
+    flashUndo("Item removed", () => persistLists(prev));
+  };
   const resetList = (listId) => {
     if (!window.confirm("Uncheck all items? (Great for reusing this list.)")) return;
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => ({ ...i, checked: false })) } : l)));
@@ -964,6 +1025,17 @@ export default function TaskManager() {
               <button style={S.addBtn} onClick={addTask}>Add</button>
             </div>
 
+            {parsed.matches.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {parsed.matches.map((m) => (
+                  <span key={m.key} style={{ ...S.tag(T.accentSoft, T.accent), display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    {m.label}
+                    <button style={{ background: "none", border: "none", color: T.accent, cursor: "pointer", padding: 0, fontSize: 12 }}
+                      onClick={() => setIgnoredParses((p) => ({ ...p, [m.key]: true }))} aria-label="Keep as text">✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
             {showAddExtras && (
               <>
                 <div style={S.quickRow}>
@@ -1308,7 +1380,7 @@ export default function TaskManager() {
             </div>}
             {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items above.</div>}
             <div style={{ marginTop: 12 }}>
-              {sectionsOf(activeList).map(([sec, items]) => (
+              {sectionsOf(activeList, reorderMode).map(([sec, items]) => (
                 <section key={sec || "__none"}>
                   {sec && (
                     <h2 style={S.gTitle(false, false)}>
@@ -1552,7 +1624,15 @@ export default function TaskManager() {
         ))}
       </div>
 
-      {toast && <div style={S.toast}>{toast}</div>}
+      {toast && (
+        <div style={{ ...S.toast, display: "flex", alignItems: "center", gap: 12 }}>
+          {typeof toast === "object" ? toast.msg : toast}
+          {typeof toast === "object" && (
+            <button style={{ background: "none", border: "none", color: T.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5 }}
+              onClick={() => { toast.fn(); setToast(""); }}>Undo</button>
+          )}
+        </div>
+      )}
 
       {/* export modal */}
       {modal === "export" && (

@@ -434,7 +434,7 @@ export default function TaskManager() {
       bucket: parsed.bucket || draft.bucket,
     };
     persist([t, ...tasks]);
-    setNewTitle(""); setDraft(blank); setMoreFields(false); setIgnoredParses({});
+    setNewTitle(""); setDraft(blank); setMoreFields(false); setIgnoredParses({}); setAddFocus(false);
     const hiddenByFocus = focus && taskMode === "List" &&
       ((t.dueDate && t.dueDate > tomorrow) || (!t.dueDate && (t.bucket === "Next week" || t.bucket === "Someday")));
     flash(hiddenByFocus ? "Added — scheduled for later (switch to All to see it)" : "Task added");
@@ -706,10 +706,11 @@ export default function TaskManager() {
     const qty = parts.shift() || "", unit = parts.join(" ");
     persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, qty, unit } : i)) } : l)));
   };
-  const editItemSection = (listId, itemId, current) => {
-    const s = window.prompt("Section for this item (blank for none):", current || "");
-    if (s === null) return;
-    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, section: s.trim() } : i)) } : l)));
+  const editItemSection = (listId, itemId, item) => {
+    const nt = window.prompt("Edit item:", item.text);
+    if (nt === null) return;
+    const s = window.prompt("Section (blank for none):", item.section || "");
+    persistLists(lists.map((l) => (l.id === listId ? { ...l, items: l.items.map((i) => (i.id === itemId ? { ...i, text: nt.trim() || i.text, section: s === null ? i.section : s.trim() } : i)) } : l)));
   };
   const sectionsOf = (list, keepOrder) => {
     const map = {}, order = [];
@@ -940,7 +941,7 @@ export default function TaskManager() {
   const TaskCard = ({ t }) => (
     <div style={S.card(t.done, t.category ? dotColor(t.category, dark, colorMap) : T.line, !t.done && t.dueDate && t.dueDate < today ? T.dangerSoft : null)}>
       <button style={S.check(t.done)} onClick={() => toggle(t.id)} aria-label={t.done ? "Mark open" : "Mark done"}>{t.done ? "✓" : ""}</button>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => setEditing({ ...t })}>
         <div style={S.title(t.done)}>{t.title}</div>
         <div style={S.meta}>
           {t.category && <span style={S.tag(catStyle(t.category, dark, colorMap).background, catStyle(t.category, dark, colorMap).color)}>{t.category}</span>}
@@ -955,7 +956,7 @@ export default function TaskManager() {
           {t.notes && (() => {
             const n = t.notes.split("\n").filter((l) => l.trim().startsWith("•")).length;
             return (
-              <button onClick={() => setOpenNotes((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
+              <button onClick={(e) => { e.stopPropagation(); setOpenNotes((prev) => ({ ...prev, [t.id]: !prev[t.id] })); }}
                 style={{ ...S.tag(T.accentSoft, T.accent), border: "none", cursor: "pointer", fontFamily: "inherit" }}>
                 ☰ {n ? `${n} items` : "notes"} {openNotes[t.id] ? "▴" : "▾"}
               </button>
@@ -999,6 +1000,11 @@ export default function TaskManager() {
             <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
           </div>
         </header>
+        {view === "Tasks" && focus && (
+          <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 14, color: T.accent, marginTop: 10 }}>
+            {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+          </div>
+        )}
         {view === "Tasks" && (() => {
           const dueT = tasks.filter((t) => !t.done && t.dueDate === today).length;
           const doneT = tasks.filter((t) => t.done && t.completedAt === today).length;
@@ -1020,6 +1026,7 @@ export default function TaskManager() {
             <div style={S.addRow}>
               <input style={S.addInput} placeholder="Add a task…" value={newTitle}
                 onFocus={() => setAddFocus(true)}
+            onBlur={() => setTimeout(() => setAddFocus(false), 250)}
                 onChange={(e) => setNewTitle(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addTask()} />
               <button style={S.addBtn} onClick={addTask}>Add</button>
@@ -1310,12 +1317,14 @@ export default function TaskManager() {
 
         {view === "Lists" && activeList && (
           <>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-              <button style={S.footBtn} onClick={() => setActiveListId(null)}>‹ Lists</button>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 17 }}>{activeList.name}</div>
-                <div style={{ fontSize: 12.5, color: T.mute }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
+            <div style={{ textAlign: "center", marginTop: 14 }}>
+              <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 800, fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 5, background: dotColor(activeList.name, dark, colorMap), display: "inline-block" }} />{activeList.name}
               </div>
+              <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button style={S.footBtn} onClick={() => setActiveListId(null)}>‹ Lists</button>
               {!selectMode && !reorderMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
               {!selectMode && <button style={S.footBtn} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
               {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
@@ -1411,7 +1420,7 @@ export default function TaskManager() {
                     <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
                       <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}
-                        onClick={() => editItemSection(activeList.id, it.id, it.section)} title="Tap to change section">{it.text}</div>
+                        onClick={() => editItemSection(activeList.id, it.id, it)} title="Tap to edit">{it.text}</div>
                       {(listExtras(activeList).includes("qty") || it.qty || it.unit) && (
                         <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
                           onClick={() => editItemQty(activeList.id, it.id, [it.qty, it.unit].filter(Boolean).join(" "))}

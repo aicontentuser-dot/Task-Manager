@@ -18,10 +18,17 @@ const store =
         },
       };
 
+/* ---------- backend ----------
+   The Worker URL is baked in here, so a new device just opens the app
+   and logs in — no sheet URL or script URL to paste, ever. Replace the
+   placeholder below with your deployed Worker URL (no trailing slash). */
+const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
+
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
 const PREFS_KEY = "taskmanager:prefs-v1";
 const LISTS_KEY = "taskmanager:lists-v1";
+const AUTH_KEY = "taskmanager:auth-v1"; // { token, name, role }
 
 /* ---------- date helpers ---------- */
 const pad = (n) => String(n).padStart(2, "0");
@@ -240,9 +247,19 @@ export default function TaskManager() {
   const [importText, setImportText] = useState("");
   const [copied, setCopied] = useState(false);
   const [toast, setToast] = useState("");
-  const [scriptUrl, setScriptUrl] = useState("");
+  const [scriptUrl, setScriptUrl] = useState(""); // legacy; unused once Worker is live
   const [lastSync, setLastSync] = useState("");
   const [syncing, setSyncing] = useState(false);
+  /* auth */
+  const [session, setSession] = useState(null);   // { token, name, role }
+  const [authReady, setAuthReady] = useState(false);
+  const [roster, setRoster] = useState([]);        // [{ name, role }] for login screen
+  const [members, setMembers] = useState([]);      // all usernames, for sharing lists
+  const [loginName, setLoginName] = useState("");
+  const [loginPin, setLoginPin] = useState("");
+  const [loginErr, setLoginErr] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [shareFor, setShareFor] = useState(null);  // list id being shared
   const [catColors, setCatColors] = useState({});
   const [pickerFor, setPickerFor] = useState(null);
   const csvRef = useRef(null);
@@ -281,10 +298,64 @@ export default function TaskManager() {
         const l = await withTimeout(store.get(LISTS_KEY), 2500);
         if (!cancelled && l?.value) setLists(JSON.parse(l.value).map((x) => ({ ...x, type: x.type || inferType(x), fields: x.fields || [] })));
       } catch (e) { /* no lists yet */ }
-      if (!cancelled) setLoading(false);
+      try {
+        const a = await withTimeout(store.get(AUTH_KEY), 2500);
+        if (!cancelled && a?.value) {
+          const s = JSON.parse(a.value);
+          if (s && s.token && s.name) setSession(s);
+        }
+      } catch (e) { /* not logged in */ }
+      if (!cancelled) { setLoading(false); setAuthReady(true); }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  /* fetch the login roster whenever we're logged out */
+  useEffect(() => {
+    if (session) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(WORKER_URL + "/users");
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data)) setRoster(data);
+      } catch (e) { /* offline — user can retry */ }
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  /* on login, pull the latest from the Worker so this device is current */
+  useEffect(() => {
+    if (session && authReady) { workerPull(true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, authReady]);
+
+  const doLogin = async () => {
+    if (!loginName) { setLoginErr("Pick your name"); return; }
+    if (!loginPin.trim()) { setLoginErr("Enter your PIN"); return; }
+    setLoggingIn(true); setLoginErr("");
+    try {
+      const res = await fetch(WORKER_URL + "/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: loginName, pin: loginPin.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.token) { setLoginErr(data.error || "Login failed"); return; }
+      const s = { token: data.token, name: data.name, role: data.role };
+      setSession(s);
+      try { await store.set(AUTH_KEY, JSON.stringify(s)); } catch (e) {}
+      setLoginPin("");
+    } catch (e) {
+      setLoginErr("Can't reach the server — check your connection");
+    } finally { setLoggingIn(false); }
+  };
+
+  const logout = async () => {
+    if (!window.confirm("Log out on this device?")) return;
+    setSession(null); setLoginName(""); setLoginPin("");
+    try { await store.set(AUTH_KEY, ""); } catch (e) {}
+  };
 
   const persist = async (next) => {
     setTasks(next); setDirty(true);
@@ -520,70 +591,99 @@ export default function TaskManager() {
     flash(`Imported ${imported.length} task${imported.length === 1 ? "" : "s"}`);
   };
 
-  /* ---------- Google Sheets sync (via Apps Script web app) ---------- */
+  /* ---------- Google Sheets sync (via Cloudflare Worker) ----------
+     The app only knows WORKER_URL; the Worker holds the sheet
+     credentials and enforces who sees what. Tasks are private to you;
+     lists you own or that are shared with you come back on every sync. */
+  const authed = (extra) => ({
+    "Content-Type": "application/json",
+    Authorization: "Bearer " + (session ? session.token : ""),
+    ...(extra || {}),
+  });
+  const handleAuthFail = () => {
+    // token expired or user removed — drop to the login screen
+    setSession(null);
+    try { store.set(AUTH_KEY, ""); } catch (e) {}
+    flash("Session ended — please log in again");
+  };
+
+  // normalize a task coming from the Worker into the app's shape
+  const normTask = (t) => ({
+    id: t.id || uid(), title: t.title || "(untitled)",
+    category: t.category || "", subCategory: t.subCategory || "",
+    dueDate: t.dueDate || "", dueTime: t.dueTime || "",
+    reminderDate: t.reminderDate || "", reminderTime: t.reminderTime || "",
+    recurrence: (t.recurrence || "").toLowerCase(), bucket: t.bucket || "Inbox",
+    done: t.done === true || String(t.status).toLowerCase() === "done",
+    createdAt: t.createdAt || today, completedAt: t.completedAt || "",
+    notes: t.notes || "", nextId: t.nextId || "",
+  });
+  const normList = (L) => {
+    let type = L.type || "", fields = Array.isArray(L.fields) ? L.fields : [];
+    if (typeof type === "string" && type.startsWith("custom:")) {
+      const rest = type.split(":")[1] || "";
+      if (rest) fields = rest.split("|").filter(Boolean);
+      type = "custom";
+    }
+    if (!LIST_TYPES[type]) type = inferType(L);
+    return {
+      ...L, type, fields,
+      owner: L.owner || (session ? session.name : ""),
+      sharedWith: Array.isArray(L.sharedWith) ? L.sharedWith : [],
+      items: (L.items || []).map((i) => ({ section: "", qty: "", unit: "", url: "", price: "", ...i })),
+    };
+  };
+
+  const adopt = (data) => {
+    if (Array.isArray(data.tasks)) { setTasks(data.tasks.map(normTask)); store.set(STORE_KEY, JSON.stringify(data.tasks.map(normTask))).catch(() => {}); }
+    if (Array.isArray(data.lists)) { const nl = data.lists.map(normList); setLists(nl); store.set(LISTS_KEY, JSON.stringify(nl)).catch(() => {}); }
+    if (Array.isArray(data.members)) setMembers(data.members);
+    const now = new Date().toLocaleString();
+    setLastSync(now); savePrefs({ lastSync: now });
+    setDirty(false);
+  };
+
+  const workerPull = async (silent) => {
+    if (!session) return;
+    if (!silent) setSyncing(true);
+    try {
+      const res = await fetch(WORKER_URL + "/sync", { headers: authed() });
+      if (res.status === 401) { handleAuthFail(); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Sync failed");
+      adopt(data);
+      if (!silent) flash(`Up to date — ${data.tasks.length} tasks`);
+    } catch (e) {
+      if (!silent) flash("Couldn't reach the server");
+      console.error(e);
+    } finally { if (!silent) setSyncing(false); }
+  };
+
   const syncPush = async () => {
-    if (!scriptUrl.trim()) { switchView("Settings"); flash("Paste your Apps Script URL first"); return; }
+    if (!session) return;
     setSyncing(true);
     try {
-      // text/plain avoids the CORS preflight that Apps Script can't answer
-      const res = await fetch(scriptUrl.trim(), {
+      const res = await fetch(WORKER_URL + "/sync", {
         method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ mode: "push", tasks, lists }),
+        headers: authed(),
+        body: JSON.stringify({ tasks, lists }),
       });
+      if (res.status === 401) { handleAuthFail(); return; }
       const data = await res.json();
-      if (data.ok) {
-        const now = new Date().toLocaleString();
-        setLastSync(now); savePrefs({ lastSync: now });
-        const r = data.reminders;
-        setDirty(false);
-        const remNote = r && (r.created || r.removed) ? ` · reminders +${r.created}${r.removed ? ` −${r.removed}` : ""}` : "";
-        flash(`Synced ${data.count} tasks${remNote}`);
-      } else throw new Error(data.error || "Script returned an error");
+      if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
+      adopt(data); // reconcile with the server's view (picks up shared-list edits)
+      flash(`Synced ${data.tasks.length} tasks`);
     } catch (e) {
-      flash("Sync failed — see Settings for setup help");
+      flash("Sync failed — check your connection");
       console.error(e);
     } finally { setSyncing(false); }
   };
 
+  // manual "pull" button — with a confirm, since it overwrites local
   const syncPull = async () => {
-    if (!scriptUrl.trim()) { switchView("Settings"); flash("Paste your Apps Script URL first"); return; }
-    if (!window.confirm("Replace all tasks in this app with the contents of your sheet?")) return;
-    setSyncing(true);
-    try {
-      const res = await fetch(scriptUrl.trim() + "?mode=pull");
-      const data = await res.json();
-      if (data.ok && Array.isArray(data.tasks)) {
-        const pulled = data.tasks.map((t) => ({
-          id: t.id || uid(), title: t.title || "(untitled)",
-          category: t.category || "", subCategory: t.subCategory || "",
-          dueDate: t.dueDate || "", dueTime: t.dueTime || "",
-          reminderDate: t.reminderDate || "", reminderTime: t.reminderTime || "",
-          recurrence: (t.recurrence || "").toLowerCase(), bucket: t.bucket || "Inbox",
-          done: t.done === true || String(t.status).toLowerCase() === "done",
-          createdAt: t.createdAt || today, completedAt: t.completedAt || "", notes: t.notes || "",
-        }));
-        persist(pulled);
-        if (Array.isArray(data.lists)) persistLists(data.lists.map((L) => {
-          let type = L.type || "", fields = Array.isArray(L.fields) ? L.fields : [];
-          if (type.startsWith("custom")) {
-            const rest = type.split(":")[1] || "";
-            if (rest) fields = rest.split("|").filter(Boolean);
-            type = "custom";
-          }
-          if (!LIST_TYPES[type]) type = inferType(L);
-          return { ...L, type, fields, items: (L.items || []).map((i) => ({ section: "", qty: "", unit: "", url: "", price: "", ...i })) };
-        }));
-        const now = new Date().toLocaleString();
-        setLastSync(now); savePrefs({ lastSync: now });
-        setDirty(false);
-        flash(`Pulled ${pulled.length} tasks from your sheet`);
-        setModal(null);
-      } else throw new Error(data.error || "Bad response");
-    } catch (e) {
-      flash("Pull failed — see Settings for setup help");
-      console.error(e);
-    } finally { setSyncing(false); }
+    if (!window.confirm("Replace what's on this device with the latest from the server?")) return;
+    await workerPull(false);
+    setModal(null);
   };
 
   /* ---------- category & sub category management ---------- */
@@ -625,18 +725,18 @@ export default function TaskManager() {
 
   /* auto-sync: quietly push a few seconds after the last change */
   useEffect(() => {
-    if (loading || !autoSync || !dirty || !scriptUrl.trim() || syncing) return;
+    if (loading || !autoSync || !dirty || !session || syncing) return;
     clearTimeout(autoTimer.current);
     autoTimer.current = setTimeout(() => { syncPush(); }, 8000);
     return () => clearTimeout(autoTimer.current);
-  }, [tasks, lists, autoSync, dirty, loading]);
+  }, [tasks, lists, autoSync, dirty, loading, session]);
 
   /* ---------- lists ---------- */
   const activeList = lists.find((l) => l.id === activeListId) || null;
   const addList = () => {
     const name = newListName.trim();
     if (!name) return;
-    const l = { id: uid(), name, items: [], createdAt: today, type: newListType, fields: newListType === "custom" ? newListFields : [] };
+    const l = { id: uid(), name, items: [], createdAt: today, type: newListType, fields: newListType === "custom" ? newListFields : [], owner: session ? session.name : "", sharedWith: [] };
     persistLists([l, ...lists]);
     setNewListName(""); setNewListType("checklist"); setNewListFields([]);
     setActiveListId(l.id);
@@ -684,9 +784,19 @@ export default function TaskManager() {
   };
   const deleteList = (id) => {
     const l = lists.find((x) => x.id === id);
+    if (l && session && l.owner && l.owner !== session.name) { flash("Only the owner can delete this list"); return; }
     if (!window.confirm(`Delete list "${l ? l.name : ""}" and its items?`)) return;
     persistLists(lists.filter((x) => x.id !== id));
     if (activeListId === id) setActiveListId(null);
+  };
+  const iOwn = (l) => !session || !l.owner || l.owner === session.name;
+  const toggleShare = (listId, name) => {
+    persistLists(lists.map((l) => {
+      if (l.id !== listId) return l;
+      const cur = Array.isArray(l.sharedWith) ? l.sharedWith : [];
+      const sharedWith = cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name];
+      return { ...l, sharedWith };
+    }));
   };
   const addItem = () => {
     const text = newItemText.trim();
@@ -877,6 +987,58 @@ export default function TaskManager() {
   };
 
   if (loading) return <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center" }}>Loading your tasks…</div>;
+
+  if (!session) return (
+    <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ fontSize: 40 }}>☑</div>
+          <h1 style={{ ...S.h1, fontSize: 30, marginTop: 6 }}>Tasks</h1>
+          <p style={{ ...S.sub, marginTop: 4 }}>Sign in to sync across your devices</p>
+        </div>
+        <div style={{ ...S.dashCard, marginTop: 0 }}>
+          <label style={S.label}>Who's this?</label>
+          {roster.length === 0 ? (
+            <p style={{ fontSize: 13.5, color: T.mute, margin: "4px 0 0" }}>
+              Can't reach the server. Check your connection and reopen the app.
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+              {roster.map((u) => (
+                <button key={u.name} onClick={() => { setLoginName(u.name); setLoginErr(""); }}
+                  style={{ border: `1px solid ${loginName === u.name ? T.accent : T.line}`,
+                    background: loginName === u.name ? T.accent : T.card,
+                    color: loginName === u.name ? "#fff" : T.ink,
+                    borderRadius: 999, padding: "8px 16px", fontSize: 15, fontWeight: 600,
+                    cursor: "pointer", fontFamily: "inherit" }}>
+                  {u.name}
+                </button>
+              ))}
+            </div>
+          )}
+          {loginName && (
+            <>
+              <label style={S.label}>PIN</label>
+              <input style={{ ...S.input, fontSize: 20, letterSpacing: "0.3em", textAlign: "center" }}
+                type="password" inputMode="numeric" autoComplete="off" value={loginPin}
+                placeholder="••••"
+                onChange={(e) => { setLoginPin(e.target.value.replace(/[^0-9]/g, "")); setLoginErr(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} autoFocus />
+            </>
+          )}
+          {loginErr && <p style={{ color: T.danger, fontSize: 13.5, margin: "10px 0 0" }}>{loginErr}</p>}
+          <button style={{ ...S.addBtn, width: "100%", marginTop: 16, padding: "11px 0", fontSize: 16, opacity: loginName ? 1 : 0.5 }}
+            onClick={doLogin} disabled={loggingIn || !loginName}>
+            {loggingIn ? "Signing in…" : "Sign in"}
+          </button>
+        </div>
+        <p style={{ textAlign: "center", fontSize: 12, color: T.mute, marginTop: 16 }}>
+          Forgot your PIN? Ask the person who set this up.
+        </p>
+      </div>
+    </div>
+  );
 
   const showAddExtras = addFocus || newTitle.length > 0 || draft.dueDate || draft.category;
 
@@ -1327,6 +1489,15 @@ export default function TaskManager() {
               <button style={S.footBtn} onClick={() => setActiveListId(null)}>‹ Lists</button>
               {!selectMode && !reorderMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
               {!selectMode && <button style={S.footBtn} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
+              {!selectMode && !reorderMode && iOwn(activeList) && (
+                <button style={{ ...S.footBtn, borderColor: (activeList.sharedWith || []).length ? T.accent : T.line, color: (activeList.sharedWith || []).length ? T.accent : T.ink }}
+                  onClick={() => setShareFor(activeList.id)} title="Share this list with other users">
+                  {(activeList.sharedWith || []).length ? `Shared · ${(activeList.sharedWith || []).length}` : "Share"}
+                </button>
+              )}
+              {!selectMode && !reorderMode && !iOwn(activeList) && (
+                <span style={{ ...S.tag(T.accentSoft, T.accent), alignSelf: "center" }}>Shared by {activeList.owner}</span>
+              )}
               {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
               {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
               {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
@@ -1589,21 +1760,25 @@ export default function TaskManager() {
             </div>
 
             <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Google Sheets sync</h3>
-              <label style={S.label}>Apps Script web app URL</label>
-              <input style={S.input} placeholder="https://script.google.com/macros/s/…/exec"
-                value={scriptUrl} onChange={(e) => setScriptUrl(e.target.value)} onBlur={() => savePrefs({ scriptUrl })} />
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "6px 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
+              <h3 style={S.dashTitle}>Account &amp; sync</h3>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{session ? session.name : "Not signed in"}</div>
+                  <div style={{ fontSize: 12.5, color: T.mute }}>{session ? (session.role === "owner" ? "Owner" : "Member") : ""}</div>
+                </div>
+                {session && <button style={S.footBtn} onClick={logout}>Log out</button>}
+              </div>
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "0 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                 <span style={{ fontSize: 14 }}>Auto-sync (push ~8s after changes)</span>
                 <button style={S.footBtn} onClick={() => { const v = !autoSync; setAutoSync(v); savePrefs({ autoSync: v }); }}>{autoSync ? "On" : "Off"}</button>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={S.addBtn} onClick={() => { savePrefs({ scriptUrl }); syncPush(); }} disabled={syncing}>{syncing ? "Syncing…" : "Push to sheet"}</button>
-                <button style={S.footBtn} onClick={() => { savePrefs({ scriptUrl }); syncPull(); }} disabled={syncing}>Pull from sheet</button>
+                <button style={S.addBtn} onClick={syncPush} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
+                <button style={S.footBtn} onClick={syncPull} disabled={syncing}>Refresh from server</button>
               </div>
               <p style={{ fontSize: 12.5, color: T.mute, margin: "12px 0 0", lineHeight: 1.5 }}>
-                Setup: Google Sheet → Extensions → Apps Script → paste the sync script → Deploy → Web app (execute as Me, access: Anyone) → paste the /exec URL above.
+                Your tasks are private to you. Lists you own or that others share with you sync automatically. Nothing to configure on this device — just stay logged in.
               </p>
             </div>
 
@@ -1699,6 +1874,40 @@ export default function TaskManager() {
           </div>
         </div>
       )}
+
+      {/* share list modal */}
+      {shareFor && (() => {
+        const l = lists.find((x) => x.id === shareFor);
+        if (!l) return null;
+        const others = members.filter((m) => !session || m !== session.name);
+        return (
+          <div style={S.modalBg} onClick={() => setShareFor(null)}>
+            <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Share "{l.name}"</h3>
+              <p style={{ fontSize: 14, color: T.mute }}>Anyone you pick can view and edit this list's items. Only you can rename, re-share, or delete it. Changes sync on the next push.</p>
+              {others.length === 0 && <div style={S.empty}>No other users yet. Add them in the Worker's USERS setting.</div>}
+              <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
+                {others.map((m) => {
+                  const on = (l.sharedWith || []).includes(m);
+                  return (
+                    <button key={m} onClick={() => toggleShare(l.id, m)}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                        border: `1px solid ${on ? T.accent : T.line}`, background: on ? T.accentSoft : T.card,
+                        color: T.ink, borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 15 }}>
+                      <span>{m}</span>
+                      <span style={{ color: on ? T.accent : T.mute, fontWeight: 600 }}>{on ? "Shared ✓" : "Share"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                <button style={S.addBtn} onClick={() => { setShareFor(null); syncPush(); }}>Done &amp; sync</button>
+                <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setShareFor(null)}>Close</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

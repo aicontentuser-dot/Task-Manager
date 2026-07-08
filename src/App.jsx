@@ -215,9 +215,15 @@ export default function TaskManager() {
   const [newListName, setNewListName] = useState("");
   const [newListType, setNewListType] = useState("checklist");
   const [newListFields, setNewListFields] = useState([]);
+  const [newListCat, setNewListCat] = useState("");
+  const [listCats, setListCats] = useState(["Work", "Personal", "House"]);
+  const [catCollapsed, setCatCollapsed] = useState({});
+  const [newCatInput, setNewCatInput] = useState("");
   const [newItemUrl, setNewItemUrl] = useState("");
   const [newItemPrice, setNewItemPrice] = useState("");
   const [newItemText, setNewItemText] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
   const [newItemSection, setNewItemSection] = useState("");
   const [newItemQty, setNewItemQty] = useState("");
   const [newItemUnit, setNewItemUnit] = useState("");
@@ -291,6 +297,7 @@ export default function TaskManager() {
           if (prefs.collapsed && typeof prefs.collapsed === "object") setCollapsed(prefs.collapsed);
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
           if (prefs.catColors) setCatColors(prefs.catColors);
+          if (Array.isArray(prefs.listCats)) setListCats(prefs.listCats);
           if (prefs.autoSync === true) setAutoSync(true);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
@@ -742,10 +749,22 @@ export default function TaskManager() {
   const addList = () => {
     const name = newListName.trim();
     if (!name) return;
-    const l = { id: uid(), name, items: [], createdAt: today, type: newListType, fields: newListType === "custom" ? newListFields : [], owner: session ? session.name : "", sharedWith: [] };
+    const l = { id: uid(), name, items: [], createdAt: today, type: newListType, fields: newListType === "custom" ? newListFields : [], category: newListCat, owner: session ? session.name : "", sharedWith: [] };
     persistLists([l, ...lists]);
-    setNewListName(""); setNewListType("checklist"); setNewListFields([]);
+    setNewListName(""); setNewListType("checklist"); setNewListFields([]); setNewListCat("");
     setActiveListId(l.id);
+  };
+  const setListCategory = (id, category) => persistLists(lists.map((l) => (l.id === id ? { ...l, category } : l)));
+  const addListCat = () => {
+    const c = newCatInput.trim();
+    if (!c || listCats.includes(c)) { setNewCatInput(""); return; }
+    const next = [...listCats, c];
+    setListCats(next); savePrefs({ listCats: next }); setNewCatInput("");
+  };
+  const removeListCat = (c) => {
+    const next = listCats.filter((x) => x !== c);
+    setListCats(next); savePrefs({ listCats: next });
+    // lists keep their label; it simply moves to "Other" until re-assigned
   };
   const setListType = (id, type) => {
     persistLists(lists.map((l) => (l.id === id ? { ...l, type, fields: type === "custom" && !(l.fields || []).length ? listExtras(l) : l.fields || [] } : l)));
@@ -814,6 +833,18 @@ export default function TaskManager() {
     persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, { id: uid(), text, section, qty, unit, url, price, checked: false }] } : l)));
     setNewItemText(""); setNewItemQty(""); setNewItemUrl(""); setNewItemPrice(""); // section & unit stay filled for batch adding
     if (itemInputRef.current) itemInputRef.current.focus();
+  };
+  const addBulk = () => {
+    if (!activeList) return;
+    const section = newItemSection.trim();
+    const unit = newItemUnit.trim();
+    // one item per line; blank lines ignored; duplicate whitespace trimmed
+    const lines = bulkText.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!lines.length) { flash("Paste one item per line first"); return; }
+    const newItems = lines.map((text) => ({ id: uid(), text, section, qty: "", unit, url: "", price: "", checked: false }));
+    persistLists(lists.map((l) => (l.id === activeList.id ? { ...l, items: [...l.items, ...newItems] } : l)));
+    setBulkText(""); setBulkOpen(false);
+    flash(`Added ${newItems.length} item${newItems.length === 1 ? "" : "s"}${section ? ` to ${section}` : ""}`);
   };
   const editItemQty = (listId, itemId, cur) => {
     const s = window.prompt("Quantity (e.g. '2 kg', '3 packs' — blank to clear):", cur || "");
@@ -1453,6 +1484,15 @@ export default function TaskManager() {
                   <button key={k} style={S.qChip(newListType === k)} onClick={() => setNewListType(k)}>{v.icon} {v.label}</button>
                 ))}
               </div>
+              {listCats.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: T.mute }}>Category:</span>
+                  <button style={S.qChip(newListCat === "")} onClick={() => setNewListCat("")}>None</button>
+                  {listCats.map((c) => (
+                    <button key={c} style={S.qChip(newListCat === c)} onClick={() => setNewListCat(c)}>{c}</button>
+                  ))}
+                </div>
+              )}
               {newListType === "custom" && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: T.mute }}>Item fields:</span>
@@ -1465,21 +1505,46 @@ export default function TaskManager() {
               )}
             </div>
             {lists.length === 0 && <div style={S.empty}>No lists yet. Create reusable checklists — groceries, packing, routines — and promote items to Tasks when they need a date.</div>}
-            {lists.map((l) => {
-              const done = l.items.filter((i) => i.checked).length;
-              return (
-                <div key={l.id} style={{ ...S.card(false, dotColor(l.name, dark, colorMap)), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
-                  <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
-                    <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{(LIST_TYPES[l.type] || LIST_TYPES.checklist).icon} {(LIST_TYPES[l.type] || LIST_TYPES.checklist).label} · {done}/{l.items.length} checked</div>
+            {(() => {
+              const renderCard = (l) => {
+                const done = l.items.filter((i) => i.checked).length;
+                return (
+                  <div key={l.id} style={{ ...S.card(false, dotColor(l.name, dark, colorMap)), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
+                    <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
+                      <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{(LIST_TYPES[l.type] || LIST_TYPES.checklist).icon} {(LIST_TYPES[l.type] || LIST_TYPES.checklist).label} · {done}/{l.items.length} checked</div>
+                    </div>
+                    <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); renameList(l.id); }} title="Rename">✎</button>
+                    <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); deleteList(l.id); }} title="Delete">✕</button>
+                    <span style={{ color: T.mute, fontSize: 16 }}>›</span>
                   </div>
-                  <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); renameList(l.id); }} title="Rename">✎</button>
-                  <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); deleteList(l.id); }} title="Delete">✕</button>
-                  <span style={{ color: T.mute, fontSize: 16 }}>›</span>
-                </div>
-              );
-            })}
+                );
+              };
+              // build groups: each defined category in order, then "Other" for the rest
+              const groups = [];
+              listCats.forEach((c) => groups.push([c, lists.filter((l) => (l.category || "") === c)]));
+              const otherLists = lists.filter((l) => !listCats.includes(l.category || ""));
+              if (otherLists.length) groups.push([listCats.length ? "Other" : "", otherLists]);
+              // if no categories are defined at all, just show a flat list
+              if (!listCats.length) return lists.map(renderCard);
+              return groups.map(([cat, group]) => {
+                if (!group.length) return null;
+                const collapsed = catCollapsed[cat];
+                return (
+                  <section key={cat || "__other"} style={{ marginTop: 8 }}>
+                    <button
+                      onClick={() => setCatCollapsed((m) => ({ ...m, [cat]: !m[cat] }))}
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "6px 2px", color: T.ink }}>
+                      <span style={{ fontSize: 12, color: T.mute, width: 12 }}>{collapsed ? "▸" : "▾"}</span>
+                      <span style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.04em" }}>{cat || "Uncategorized"}</span>
+                      <span style={S.count}>{group.length}</span>
+                    </button>
+                    {!collapsed && group.map(renderCard)}
+                  </section>
+                );
+              });
+            })()}
           </>
         )}
 
@@ -1518,6 +1583,14 @@ export default function TaskManager() {
                 {activeList.type === "custom" && CUSTOM_CHOICES.map((f) => (
                   <button key={f} style={S.qChip((activeList.fields || []).includes(f))} onClick={() => toggleListField(activeList.id, f)}>{f}</button>
                 ))}
+                {listCats.length > 0 && <>
+                  <span style={{ fontSize: 12, color: T.mute, marginLeft: 6 }}>Category:</span>
+                  <select value={listCats.includes(activeList.category) ? activeList.category : ""} onChange={(e) => setListCategory(activeList.id, e.target.value)}
+                    style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
+                    <option value="">None</option>
+                    {listCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </>}
               </div>
             )}
             {selectMode && (() => {
@@ -1529,42 +1602,8 @@ export default function TaskManager() {
                 </div>
               );
             })()}
-            {!selectMode && !reorderMode && <div style={{ ...S.addCard, borderColor: T.accent, borderWidth: 1.5, boxShadow: `0 1px 6px ${dark ? "rgba(63,174,140,0.15)" : "rgba(19,106,85,0.12)"}` }}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input ref={itemInputRef} style={{ ...S.addInput, fontWeight: 500 }} placeholder="＋ Add an item…" value={newItemText}
-                  onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                <button style={S.addBtn} onClick={addItem}>Add</button>
-              </div>
-              {(() => {
-                const ex = listExtras(activeList);
-                return (
-                  <>
-                    <div style={{ fontSize: 10.5, fontWeight: 600, color: T.mute, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10 }}>Details (optional)</div>
-                    <div style={{ display: "flex", gap: 8, marginTop: 4, opacity: 0.85 }}>
-                      <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (optional)"
-                        value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                      {ex.includes("qty") && <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
-                        value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
-                      {ex.includes("unit") && <input style={{ ...S.input, flex: 1.2 }} list="listunits" placeholder="Unit"
-                        value={newItemUnit} onChange={(e) => setNewItemUnit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
-                      {ex.includes("price") && <input style={{ ...S.input, flex: 1.2 }} placeholder="Price"
-                        value={newItemPrice} onChange={(e) => setNewItemPrice(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
-                    </div>
-                    {ex.includes("url") && (
-                      <input style={{ ...S.input, marginTop: 8 }} type="url" placeholder="Link (https://…)"
-                        value={newItemUrl} onChange={(e) => setNewItemUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                    )}
-                  </>
-                );
-              })()}
-              <datalist id="listsections">
-                {Array.from(new Set(activeList.items.map((i) => i.section).filter(Boolean))).map((s) => <option key={s} value={s} />)}
-              </datalist>
-              <datalist id="listunits">
-                {Array.from(new Set(["kg", "g", "L", "ml", "pcs", "pack", "box", "dozen", ...activeList.items.map((i) => i.unit).filter(Boolean)])).map((u) => <option key={u} value={u} />)}
-              </datalist>
-            </div>}
-            {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items above.</div>}
+
+            {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items below.</div>}
             <div style={{ marginTop: 12 }}>
               {sectionsOf(activeList, reorderMode).map(([sec, items]) => (
                 <section key={sec || "__none"}>
@@ -1623,6 +1662,62 @@ export default function TaskManager() {
               ))}
             </div>
             <p style={{ fontSize: 12.5, color: T.mute, marginTop: 12, lineHeight: 1.5 }}>➔ Task copies an item into your Tasks inbox — category "{activeList.name}", sub category from its section. The item stays here, so the list remains reusable. Tap an item’s text to change its section.</p>
+            {!selectMode && !reorderMode && <div style={{ ...S.addCard, borderColor: T.accent, borderWidth: 1.5, boxShadow: `0 1px 6px ${dark ? "rgba(63,174,140,0.15)" : "rgba(19,106,85,0.12)"}` }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input ref={itemInputRef} style={{ ...S.addInput, fontWeight: 500 }} placeholder="＋ Add an item…" value={newItemText}
+                  onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                <button style={S.addBtn} onClick={addItem}>Add</button>
+              </div>
+              <button
+                style={{ background: "none", border: "none", color: T.accent, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "6px 2px 0", alignSelf: "flex-start" }}
+                onClick={() => setBulkOpen((v) => !v)}>
+                {bulkOpen ? "× Close bulk add" : "≣ Paste many at once"}
+              </button>
+              {bulkOpen && (
+                <div style={{ marginTop: 6 }}>
+                  <textarea
+                    style={{ ...S.input, width: "100%", minHeight: 120, resize: "vertical", fontFamily: "inherit", lineHeight: 1.5, boxSizing: "border-box" }}
+                    placeholder={"One item per line, e.g.\nMilk\nEggs\nBread\n\nPaste a whole list here and each line becomes an item."}
+                    value={bulkText} onChange={(e) => setBulkText(e.target.value)} autoFocus />
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+                    <button style={{ ...S.addBtn, opacity: bulkText.trim() ? 1 : 0.5 }} disabled={!bulkText.trim()} onClick={addBulk}>
+                      Add {bulkText.split("\n").map((s) => s.trim()).filter(Boolean).length || ""} item{bulkText.split("\n").map((s) => s.trim()).filter(Boolean).length === 1 ? "" : "s"}
+                    </button>
+                    <span style={{ fontSize: 12, color: T.mute }}>
+                      {newItemSection.trim() ? `→ into "${newItemSection.trim()}"` : "→ no section (set one below to group them)"}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {(() => {
+                const ex = listExtras(activeList);
+                return (
+                  <>
+                    <div style={{ fontSize: 10.5, fontWeight: 600, color: T.mute, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10 }}>Details (optional)</div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 4, opacity: 0.85 }}>
+                      <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (optional)"
+                        value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                      {ex.includes("qty") && <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
+                        value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
+                      {ex.includes("unit") && <input style={{ ...S.input, flex: 1.2 }} list="listunits" placeholder="Unit"
+                        value={newItemUnit} onChange={(e) => setNewItemUnit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
+                      {ex.includes("price") && <input style={{ ...S.input, flex: 1.2 }} placeholder="Price"
+                        value={newItemPrice} onChange={(e) => setNewItemPrice(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
+                    </div>
+                    {ex.includes("url") && (
+                      <input style={{ ...S.input, marginTop: 8 }} type="url" placeholder="Link (https://…)"
+                        value={newItemUrl} onChange={(e) => setNewItemUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+                    )}
+                  </>
+                );
+              })()}
+              <datalist id="listsections">
+                {Array.from(new Set(activeList.items.map((i) => i.section).filter(Boolean))).map((s) => <option key={s} value={s} />)}
+              </datalist>
+              <datalist id="listunits">
+                {Array.from(new Set(["kg", "g", "L", "ml", "pcs", "pack", "box", "dozen", ...activeList.items.map((i) => i.unit).filter(Boolean)])).map((u) => <option key={u} value={u} />)}
+              </datalist>
+            </div>}
           </>
         )}
 
@@ -1667,4 +1762,271 @@ export default function TaskManager() {
                 {stats.last7.map((d) => (
                   <div key={d.date} style={S.col}>
                     <span style={{ fontSize: 11, color: T.mute }}>{d.count || ""}</span>
-                    <div style={S.colBar((d.count / maxLast7
+                    <div style={S.colBar((d.count / maxLast7) * 100, T.accent)} />
+                    <span style={S.colLbl}>{d.date === today ? "Today" : dayLabel(d.date)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Open tasks by category</h3>
+              {stats.catRows.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No open tasks.</div>}
+              {stats.catRows.map(([cat, n]) => (
+                <div key={cat} style={S.barRow}>
+                  <span style={S.barLbl}>{cat}</span>
+                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, colorMap))} /></div>
+                  <span style={S.barVal}>{n}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Unscheduled</h3>
+              {Object.entries(stats.buckets).map(([b, n]) => (
+                <div key={b} style={S.barRow}>
+                  <span style={S.barLbl}>{b}</span>
+                  <div style={S.barTrack}><div style={S.barFill((n / Math.max(1, ...Object.values(stats.buckets))) * 100, T.amber)} /></div>
+                  <span style={S.barVal}>{n}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* ---------- SETTINGS VIEW ---------- */}
+        {view === "Settings" && (
+          <>
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Appearance</h3>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 14.5 }}>Dark mode</span>
+                <button style={S.footBtn} onClick={() => setTheme(!dark)}>{dark ? "On · switch to light" : "Off · switch to dark"}</button>
+              </div>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>List categories</h3>
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "0 0 10px", lineHeight: 1.5 }}>Group your lists on the Lists screen. Removing a category here just moves its lists to “Other” — nothing is deleted.</p>
+              {listCats.length === 0 && <div style={{ color: T.mute, fontSize: 14, marginBottom: 8 }}>No categories yet — add a few below.</div>}
+              {listCats.map((c) => (
+                <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}` }}>
+                  <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                  <span style={S.count}>{lists.filter((l) => (l.category || "") === c).length}</span>
+                  <button style={S.iconBtn} onClick={() => removeListCat(c)} title="Remove from the set">✕</button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <input style={S.addInput} placeholder="Add a category (e.g. Work)…" value={newCatInput}
+                  onChange={(e) => setNewCatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addListCat()} />
+                <button style={S.addBtn} onClick={addListCat}>Add</button>
+              </div>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Categories</h3>
+              {categories.filter((c) => c !== "All").length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No categories yet — they appear here once you use them on tasks.</div>}
+              {categories.filter((c) => c !== "All").map((c) => (
+                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
+                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === c ? null : c)}
+                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
+                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                    <span style={{ ...S.count }}>{tasks.filter((t) => t.category === c).length}</span>
+                    <button style={S.iconBtn} onClick={() => renameField("category", c)} title="Rename">✎</button>
+                    <button style={S.iconBtn} onClick={() => deleteField("category", c)} title="Remove">✕</button>
+                  </div>
+                  {pickerFor === c && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
+                      {HUES.map((h, i) => (
+                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
+                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
+                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
+                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "10px 0 0" }}>Colors are assigned automatically and kept distinct. Tap a dot to pick a different color. Rename applies to every task using it.</p>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Sub categories</h3>
+              {subSuggestions.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No sub categories yet.</div>}
+              {subSuggestions.map((c) => (
+                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
+                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === "sub:" + c ? null : "sub:" + c)}
+                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === "sub:" + c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
+                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
+                    <span style={{ ...S.count }}>{tasks.filter((t) => t.subCategory === c).length}</span>
+                    <button style={S.iconBtn} onClick={() => renameField("subCategory", c)} title="Rename">✎</button>
+                    <button style={S.iconBtn} onClick={() => deleteField("subCategory", c)} title="Remove">✕</button>
+                  </div>
+                  {pickerFor === "sub:" + c && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
+                      {HUES.map((h, i) => (
+                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
+                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
+                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
+                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Account &amp; sync</h3>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{session ? session.name : "Not signed in"}</div>
+                  <div style={{ fontSize: 12.5, color: T.mute }}>{session ? (session.role === "owner" ? "Owner" : "Member") : ""}</div>
+                </div>
+                {session && <button style={S.footBtn} onClick={logout}>Log out</button>}
+              </div>
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "0 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <span style={{ fontSize: 14 }}>Auto-sync (push ~8s after changes)</span>
+                <button style={S.footBtn} onClick={() => { const v = !autoSync; setAutoSync(v); savePrefs({ autoSync: v }); }}>{autoSync ? "On" : "Off"}</button>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={S.addBtn} onClick={syncPush} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
+                <button style={S.footBtn} onClick={syncPull} disabled={syncing}>Refresh from server</button>
+              </div>
+              <p style={{ fontSize: 12.5, color: T.mute, margin: "12px 0 0", lineHeight: 1.5 }}>
+                Your tasks are private to you. Lists you own or that others share with you sync automatically. Nothing to configure on this device — just stay logged in.
+              </p>
+            </div>
+
+            <div style={S.dashCard}>
+              <h3 style={S.dashTitle}>Data</h3>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={S.footBtn} onClick={() => setModal("export")}>Export CSV</button>
+                <button style={S.footBtn} onClick={() => setModal("import")}>Import CSV</button>
+                <button style={S.footBtn} onClick={clearDone}>Clear completed</button>
+                <button style={{ ...S.footBtn, color: T.danger, borderColor: T.danger }} onClick={deleteAll}>Delete all tasks</button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* bottom navigation */}
+      <div style={{ ...S.footer, justifyContent: "space-around", padding: "6px 8px calc(6px + env(safe-area-inset-bottom))" }}>
+        {NAV.map((v) => (
+          <button key={v} onClick={() => switchView(v)}
+            style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "4px 10px",
+              color: view === v ? T.accent : T.mute, fontWeight: view === v ? 700 : 500 }}>
+            <span style={{ fontSize: 18, lineHeight: 1 }}>{NAV_ICON[v]}</span>
+            <span style={{ fontSize: 11 }}>{v}</span>
+          </button>
+        ))}
+      </div>
+
+      {toast && (
+        <div style={{ ...S.toast, display: "flex", alignItems: "center", gap: 12 }}>
+          {typeof toast === "object" ? toast.msg : toast}
+          {typeof toast === "object" && (
+            <button style={{ background: "none", border: "none", color: T.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5 }}
+              onClick={() => { toast.fn(); setToast(""); }}>Undo</button>
+          )}
+        </div>
+      )}
+
+      {/* export modal */}
+      {modal === "export" && (
+        <div style={S.modalBg} onClick={() => setModal(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Export to Google Sheets</h3>
+            <p style={{ fontSize: 14, color: T.mute }}>Download the CSV and import it in Sheets (File → Import), or copy the text and paste into a sheet, then Data → Split text to columns.</p>
+            <textarea ref={csvRef} style={S.textarea} readOnly value={toCSV(tasks)} />
+            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              <button style={S.addBtn} onClick={downloadCSV}>Download CSV</button>
+              <button style={S.footBtn} onClick={copyCSV}>{copied ? "Copied ✓" : "Copy"}</button>
+              <button style={S.footBtn} onClick={() => setModal("import")}>Import…</button>
+              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* import modal */}
+      {modal === "import" && (
+        <div style={S.modalBg} onClick={() => setModal(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Import CSV</h3>
+            <p style={{ fontSize: 14, color: T.mute }}>Header row: Task, Category, Sub Category, Due Date, Due Time, Reminder Date, Reminder Time, Recurrence, Bucket, Status, Created, Completed. Dates YYYY-MM-DD, times HH:MM.</p>
+            <textarea style={S.textarea} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste CSV here…" />
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button style={S.addBtn} onClick={doImport}>Import</button>
+              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* edit modal */}
+      {editing && (
+        <div style={S.modalBg} onClick={() => setEditing(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Edit task</h3>
+            <div style={{ marginBottom: 10 }}>
+              <label style={S.label}>Task</label>
+              <input style={S.input} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={S.label}>Notes / items</label>
+              <textarea style={{ ...S.textarea, height: 90 }} value={editing.notes || ""} placeholder="Anything extra — items from a list land here"
+                onChange={(e) => setEditing({ ...editing, notes: e.target.value })} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {editFields(editing, setEditing)}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button style={S.addBtn} onClick={saveEdit}>Save changes</button>
+              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setEditing(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* share list modal */}
+      {shareFor && (() => {
+        const l = lists.find((x) => x.id === shareFor);
+        if (!l) return null;
+        const others = members.filter((m) => !session || m !== session.name);
+        return (
+          <div style={S.modalBg} onClick={() => setShareFor(null)}>
+            <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Share "{l.name}"</h3>
+              <p style={{ fontSize: 14, color: T.mute }}>Anyone you pick can view and edit this list's items. Only you can rename, re-share, or delete it. Changes sync on the next push.</p>
+              {others.length === 0 && <div style={S.empty}>No other users yet. Add them in the Worker's USERS setting.</div>}
+              <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
+                {others.map((m) => {
+                  const on = (l.sharedWith || []).includes(m);
+                  return (
+                    <button key={m} onClick={() => toggleShare(l.id, m)}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                        border: `1px solid ${on ? T.accent : T.line}`, background: on ? T.accentSoft : T.card,
+                        color: T.ink, borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 15 }}>
+                      <span>{m}</span>
+                      <span style={{ color: on ? T.accent : T.mute, fontWeight: 600 }}>{on ? "Shared ✓" : "Share"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                <button style={S.addBtn} onClick={() => { setShareFor(null); syncPush(); }}>Done &amp; sync</button>
+                <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setShareFor(null)}>Close</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}

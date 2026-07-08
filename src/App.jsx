@@ -22,7 +22,7 @@ const store =
    The Worker URL is baked in here, so a new device just opens the app
    and logs in — no sheet URL or script URL to paste, ever. Replace the
    placeholder below with your deployed Worker URL (no trailing slash). */
-const WORKER_URL = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
 
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
@@ -378,7 +378,7 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, ...patch };
+    const p = { dark, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };

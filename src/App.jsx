@@ -22,7 +22,7 @@ const store =
    The Worker URL is baked in here, so a new device just opens the app
    and logs in — no sheet URL or script URL to paste, ever. Replace the
    placeholder below with your deployed Worker URL (no trailing slash). */
-const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
+const WORKER_URL = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
 
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
@@ -389,6 +389,27 @@ export default function TaskManager() {
     const next = { ...collapsed, [key]: !collapsed[key] };
     setCollapsed(next); savePrefs({ collapsed: next });
   };
+  // Jumps from a Dashboard stat/bar to the Tasks view, pre-filtered and
+  // scrolled to the relevant group. groupKeys (if given) are expanded and
+  // taken out of Focus mode if Focus would otherwise hide them.
+  const goToTasksGroup = ({ cat = "All", sub = "All", status = "Open", groupKeys } = {}) => {
+    setFilterCat(cat); setFilterSub(sub); setFilterStatus(status);
+    switchTaskMode("List");
+    if (groupKeys && groupKeys.some((k) => !FOCUS_KEYS.includes(k))) switchFocus(false);
+    if (groupKeys && groupKeys.length) {
+      const next = { ...collapsed };
+      groupKeys.forEach((k) => { next[k] = false; });
+      setCollapsed(next); savePrefs({ collapsed: next });
+    }
+    switchView("Tasks");
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        const el = groupKeys && groupKeys.map((k) => document.getElementById("grp-" + k)).find(Boolean);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        else window.scrollTo({ top: 0, behavior: "smooth" });
+      }, 80);
+    });
+  };
   const persistLists = async (next) => {
     setLists(next); setDirty(true);
     try { await store.set(LISTS_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
@@ -428,7 +449,7 @@ export default function TaskManager() {
 
   const q = search.trim().toLowerCase();
   const visible = tasks.filter((t) =>
-    (filterCat === "All" || t.category === filterCat) &&
+    (filterCat === "All" || (filterCat === "Uncategorized" ? !t.category : t.category === filterCat)) &&
     (filterSub === "All" || t.subCategory === filterSub) &&
     (!q || [t.title, t.category, t.subCategory].some((x) => (x || "").toLowerCase().includes(q)))
   );
@@ -1480,7 +1501,7 @@ export default function TaskManager() {
                     const items = isCollapsed ? [] : isExpanded ? g.items : g.items.slice(0, cap);
                     const moreCount = g.items.length - cap;
                     return (
-                      <section key={g.key}>
+                      <section key={g.key} id={"grp-" + g.key}>
                         <h2 style={{ ...S.gTitle(g.danger, g.bucket || g.accent), cursor: "pointer", userSelect: "none" }} onClick={() => toggleCollapse(g.key)}>
                           <span style={{ fontWeight: 400, fontSize: 11 }}>{isCollapsed ? "▸" : "▾"}</span>
                           {g.key} <span style={S.count}>{g.items.length}</span>
@@ -1827,19 +1848,23 @@ export default function TaskManager() {
         {view === "Dashboard" && (
           <>
             <div style={S.statGrid}>
-              <div style={S.statCard(T.danger)}>
+              <div style={{ ...S.statCard(T.danger), cursor: "pointer" }} title="View overdue tasks"
+                onClick={() => goToTasksGroup({ groupKeys: ["Overdue"] })}>
                 <div style={{ ...S.statNum, color: stats.overdue ? T.danger : "inherit" }}>{stats.overdue}</div>
                 <div style={S.statLbl}>Overdue</div>
               </div>
-              <div style={S.statCard(T.accent)}>
+              <div style={{ ...S.statCard(T.accent), cursor: "pointer" }} title="View tasks due today"
+                onClick={() => goToTasksGroup({ groupKeys: ["Today"] })}>
                 <div style={S.statNum}>{stats.dueToday}</div>
                 <div style={S.statLbl}>Due today</div>
               </div>
-              <div style={S.statCard(T.amber)}>
+              <div style={{ ...S.statCard(T.amber), cursor: "pointer" }} title="View tasks due in the next 7 days"
+                onClick={() => goToTasksGroup({ groupKeys: ["Today", "Tomorrow", "This week"] })}>
                 <div style={S.statNum}>{stats.week}</div>
                 <div style={S.statLbl}>Due in next 7 days</div>
               </div>
-              <div style={S.statCard(T.line)}>
+              <div style={{ ...S.statCard(T.line), cursor: "pointer" }} title="View tasks completed this week"
+                onClick={() => goToTasksGroup({ status: "Done" })}>
                 <div style={S.statNum}>{stats.doneWeek}</div>
                 <div style={S.statLbl}>Completed this week</div>
               </div>
@@ -1875,7 +1900,8 @@ export default function TaskManager() {
               <h3 style={S.dashTitle}>Open tasks by category</h3>
               {stats.catRows.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No open tasks.</div>}
               {stats.catRows.map(([cat, n]) => (
-                <div key={cat} style={S.barRow}>
+                <div key={cat} style={{ ...S.barRow, cursor: "pointer" }} title={`View open "${cat}" tasks`}
+                  onClick={() => goToTasksGroup({ cat })}>
                   <span style={S.barLbl}>{cat}</span>
                   <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, colorMap))} /></div>
                   <span style={S.barVal}>{n}</span>
@@ -1886,7 +1912,8 @@ export default function TaskManager() {
             <div style={S.dashCard}>
               <h3 style={S.dashTitle}>Unscheduled</h3>
               {Object.entries(stats.buckets).map(([b, n]) => (
-                <div key={b} style={S.barRow}>
+                <div key={b} style={{ ...S.barRow, cursor: "pointer" }} title={`View "${b}" tasks`}
+                  onClick={() => goToTasksGroup({ groupKeys: [b] })}>
                   <span style={S.barLbl}>{b}</span>
                   <div style={S.barTrack}><div style={S.barFill((n / Math.max(1, ...Object.values(stats.buckets))) * 100, T.amber)} /></div>
                   <span style={S.barVal}>{n}</span>

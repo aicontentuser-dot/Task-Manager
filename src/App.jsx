@@ -259,6 +259,9 @@ export default function TaskManager() {
   const [syncing, setSyncing] = useState(false);
   /* auth */
   const [session, setSession] = useState(null);   // { token, name, role }
+  const [workerUrl, setWorkerUrl] = useState(WORKER_URL); // persisted override survives redeploys
+  const [urlDraft, setUrlDraft] = useState("");
+  const [hideChecked, setHideChecked] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [roster, setRoster] = useState([]);        // [{ name, role }] for login screen
   const [members, setMembers] = useState([]);      // all usernames, for sharing lists
@@ -298,6 +301,8 @@ export default function TaskManager() {
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
           if (prefs.catColors) setCatColors(prefs.catColors);
           if (Array.isArray(prefs.listCats)) setListCats(prefs.listCats);
+          if (prefs.workerUrl) setWorkerUrl(prefs.workerUrl);
+          if (prefs.hideChecked === true) setHideChecked(true);
           if (prefs.autoSync === true) setAutoSync(true);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
@@ -324,13 +329,13 @@ export default function TaskManager() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(WORKER_URL + "/users");
+        const res = await fetch(workerUrl + "/users");
         const data = await res.json();
         if (!cancelled && Array.isArray(data)) setRoster(data);
       } catch (e) { /* offline — user can retry */ }
     })();
     return () => { cancelled = true; };
-  }, [session]);
+  }, [session, workerUrl]);
 
   /* on login, pull the latest from the Worker so this device is current */
   useEffect(() => {
@@ -343,7 +348,7 @@ export default function TaskManager() {
     if (!loginPin.trim()) { setLoginErr("Enter your PIN"); return; }
     setLoggingIn(true); setLoginErr("");
     try {
-      const res = await fetch(WORKER_URL + "/login", {
+      const res = await fetch(workerUrl + "/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: loginName, pin: loginPin.trim() }),
@@ -655,7 +660,7 @@ export default function TaskManager() {
     if (!session) return;
     if (!silent) setSyncing(true);
     try {
-      const res = await fetch(WORKER_URL + "/sync", { headers: authed() });
+      const res = await fetch(workerUrl + "/sync", { headers: authed() });
       if (res.status === 401) { handleAuthFail(); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync failed");
@@ -673,10 +678,10 @@ export default function TaskManager() {
     // Never overwrite the server with local state until we've read it once
     // this session — this is what prevents an empty device from wiping
     // everyone's lists.
-    if (!pulledOnce.current) { await workerPull(true); if (!pulledOnce.current) return; }
+    if (!pulledOnce.current) { await workerPull(true); if (!pulledOnce.current) { flash("Can't reach the server — check the Server URL in Settings"); return; } }
     setSyncing(true);
     try {
-      const res = await fetch(WORKER_URL + "/sync", {
+      const res = await fetch(workerUrl + "/sync", {
         method: "POST",
         headers: authed(),
         body: JSON.stringify({ tasks, lists }),
@@ -905,6 +910,33 @@ export default function TaskManager() {
     flash("List reset — ready to reuse");
   };
   const toggleSelect = (itemId) => setSelectedIds((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+  const selectedList = () => (activeList ? activeList.items.filter((i) => selectedIds[i.id]) : []);
+  const selectAllItems = () => activeList && setSelectedIds(Object.fromEntries(activeList.items.map((i) => [i.id, true])));
+  const selectNoItems = () => setSelectedIds({});
+  const selectedAsText = () => {
+    const sel = selectedList();
+    const body = sel.map((i) => {
+      const q = [i.qty, i.unit].filter(Boolean).join(" ");
+      return "• " + i.text + (q ? ` (${q})` : "");
+    }).join("\n");
+    return activeList ? `${activeList.name}\n${body}` : body;
+  };
+  const copySelected = async () => {
+    if (!selectedList().length) return;
+    const text = selectedAsText();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
+      else { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); }
+      flash(`Copied ${selectedList().length} item${selectedList().length === 1 ? "" : "s"}`);
+    } catch (e) { flash("Couldn't copy"); }
+  };
+  const shareSelected = async () => {
+    if (!selectedList().length) return;
+    const text = selectedAsText();
+    if (navigator.share) {
+      try { await navigator.share({ title: activeList.name, text }); } catch (e) { /* user cancelled */ }
+    } else { await copySelected(); flash("Sharing not available here — copied instead"); }
+  };
   const createTaskFromSelected = () => {
     if (!activeList) return;
     const sel = activeList.items.filter((i) => selectedIds[i.id]);
@@ -1037,9 +1069,21 @@ export default function TaskManager() {
         <div style={{ ...S.dashCard, marginTop: 0 }}>
           <label style={S.label}>Who's this?</label>
           {roster.length === 0 ? (
-            <p style={{ fontSize: 13.5, color: T.mute, margin: "4px 0 0" }}>
-              Can't reach the server. Check your connection and reopen the app.
-            </p>
+            <div>
+              <p style={{ fontSize: 13.5, color: T.mute, margin: "4px 0 8px", lineHeight: 1.5 }}>
+                Can't reach the server. Check the Server URL below, then reopen the app.
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={S.addInput} placeholder="https://your-worker.workers.dev"
+                  value={urlDraft || (workerUrl.includes("REPLACE-WITH") ? "" : workerUrl)}
+                  onChange={(e) => setUrlDraft(e.target.value)} />
+                <button style={S.addBtn} onClick={() => {
+                  const u = urlDraft.trim().replace(/\/+$/, "");
+                  if (!/^https?:\/\//.test(u)) { setLoginErr("URL should start with https://"); return; }
+                  setWorkerUrl(u); savePrefs({ workerUrl: u }); setUrlDraft(""); setLoginErr("");
+                }}>Save</button>
+              </div>
+            </div>
           ) : (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
               {roster.map((u) => (
@@ -1570,6 +1614,11 @@ export default function TaskManager() {
                 <span style={{ ...S.tag(T.accentSoft, T.accent), alignSelf: "center" }}>Shared by {activeList.owner}</span>
               )}
               {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
+              {!selectMode && !reorderMode && activeList.items.some((i) => i.checked) && (
+                <button style={S.footBtn} onClick={() => { const v = !hideChecked; setHideChecked(v); savePrefs({ hideChecked: v }); }} title="Show or hide checked items">
+                  {hideChecked ? "Show done" : "Hide done"}
+                </button>
+              )}
               {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
               {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
             </div>
@@ -1595,22 +1644,37 @@ export default function TaskManager() {
             )}
             {selectMode && (() => {
               const n = Object.values(selectedIds).filter(Boolean).length;
+              const total = activeList.items.length;
               return (
-                <div style={{ ...S.addCard, display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ flex: 1, fontSize: 14, color: T.mute }}>{n ? `${n} item${n === 1 ? "" : "s"} selected` : "Tap items to select them (adding is paused — Cancel to add)"}</span>
-                  <button style={{ ...S.addBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={createTaskFromSelected}>Create one task</button>
+                <div style={{ ...S.addCard, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ flex: 1, fontSize: 14, color: n ? T.ink : T.mute }}>
+                      {n ? `${n} of ${total} selected` : "Tap items below to select them"}
+                    </span>
+                    <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={n === total ? selectNoItems : selectAllItems}>
+                      {n === total ? "Clear" : "All"}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button style={{ ...S.footBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={copySelected}>Copy</button>
+                    <button style={{ ...S.footBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={shareSelected}>Share</button>
+                    <button style={{ ...S.addBtn, marginLeft: "auto", opacity: n ? 1 : 0.5 }} disabled={!n} onClick={createTaskFromSelected}>→ Task</button>
+                  </div>
                 </div>
               );
             })()}
 
             {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items below.</div>}
             <div style={{ marginTop: 12 }}>
-              {sectionsOf(activeList, reorderMode).map(([sec, items]) => (
+              {sectionsOf(activeList, reorderMode).map(([sec, allItems]) => {
+                const items = (!selectMode && !reorderMode && hideChecked) ? allItems.filter((i) => !i.checked) : allItems;
+                if (!items.length) return null;
+                return (
                 <section key={sec || "__none"}>
                   {sec && (
                     <h2 style={S.gTitle(false, false)}>
                       <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(sec, dark, colorMap) }} />
-                      {sec} <span style={S.count}>{items.filter((i) => !i.checked).length}/{items.length}</span>
+                      {sec} <span style={S.count}>{allItems.filter((i) => !i.checked).length}/{allItems.length}</span>
                     </h2>
                   )}
                   {items.map((it) => reorderMode ? (
@@ -1622,13 +1686,11 @@ export default function TaskManager() {
                     </div>
                   ) : selectMode ? (
                     <div key={it.id} onClick={() => toggleSelect(it.id)}
-                      style={{ ...S.card(false, selectedIds[it.id] ? T.accent : T.line), alignItems: "center", cursor: "pointer",
-                        borderTop: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
-                        borderRight: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
-                        borderBottom: `1px solid ${selectedIds[it.id] ? T.accent : T.line}`,
+                      style={{ ...S.card(false), alignItems: "center", cursor: "pointer",
+                        border: `1.5px solid ${selectedIds[it.id] ? T.accent : T.line}`,
                         background: selectedIds[it.id] ? T.accentSoft : T.card }}>
-                      <span style={{ ...S.check(!!selectedIds[it.id]), pointerEvents: "none" }}>{selectedIds[it.id] ? "✓" : ""}</span>
-                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere" }}>{it.text}</div>
+                      <span style={{ width: 22, height: 22, minWidth: 22, borderRadius: 11, border: `2px solid ${selectedIds[it.id] ? T.accent : T.line}`, background: selectedIds[it.id] ? T.accent : "transparent", color: "#fff", fontSize: 13, lineHeight: "20px", textAlign: "center", pointerEvents: "none", marginTop: 2 }}>{selectedIds[it.id] ? "✓" : ""}</span>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere", opacity: it.checked ? 0.6 : 1, textDecoration: it.checked ? "line-through" : "none" }}>{it.text}</div>
                       {(it.qty || it.unit) && <span style={S.tag(T.tagBg, T.mute)}>{[it.qty, it.unit].filter(Boolean).join(" ")}</span>}
                       {it.price && <span style={S.tag(T.tagBg, T.mute)}>{it.price}</span>}
                     </div>
@@ -1659,7 +1721,8 @@ export default function TaskManager() {
                     </div>
                   ))}
                 </section>
-              ))}
+                );
+              })}
             </div>
             <p style={{ fontSize: 12.5, color: T.mute, marginTop: 12, lineHeight: 1.5 }}>➔ Task copies an item into your Tasks inbox — category "{activeList.name}", sub category from its section. The item stays here, so the list remains reusable. Tap an item’s text to change its section.</p>
             {!selectMode && !reorderMode && <div style={{ ...S.addCard, borderColor: T.accent, borderWidth: 1.5, boxShadow: `0 1px 6px ${dark ? "rgba(63,174,140,0.15)" : "rgba(19,106,85,0.12)"}` }}>
@@ -1896,8 +1959,26 @@ export default function TaskManager() {
                 <button style={S.addBtn} onClick={syncPush} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
                 <button style={S.footBtn} onClick={syncPull} disabled={syncing}>Refresh from server</button>
               </div>
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.line}` }}>
+                <label style={S.label}>Server URL</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input style={S.addInput} placeholder="https://your-worker.workers.dev"
+                    value={urlDraft || workerUrl} onChange={(e) => setUrlDraft(e.target.value)} />
+                  <button style={S.addBtn} onClick={() => {
+                    const u = (urlDraft || workerUrl).trim().replace(/\/+$/, "");
+                    if (!/^https?:\/\//.test(u)) { flash("URL should start with https://"); return; }
+                    setWorkerUrl(u); savePrefs({ workerUrl: u }); setUrlDraft(""); pulledOnce.current = false;
+                    flash("Server URL saved");
+                  }}>Save</button>
+                </div>
+                <p style={{ fontSize: 12, color: (workerUrl.includes("REPLACE-WITH") ? T.danger : T.mute), margin: "6px 0 0", lineHeight: 1.5 }}>
+                  {workerUrl.includes("REPLACE-WITH")
+                    ? "⚠ Not set yet — paste your Cloudflare Worker URL here and Save. This is almost certainly why sync isn't working."
+                    : "Set once and it sticks, even when you redeploy the app."}
+                </p>
+              </div>
               <p style={{ fontSize: 12.5, color: T.mute, margin: "12px 0 0", lineHeight: 1.5 }}>
-                Your tasks are private to you. Lists you own or that others share with you sync automatically. Nothing to configure on this device — just stay logged in.
+                Your tasks are private to you. Lists you own or that others share with you sync automatically.
               </p>
             </div>
 

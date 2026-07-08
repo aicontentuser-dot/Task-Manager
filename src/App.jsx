@@ -22,7 +22,7 @@ const store =
    The Worker URL is baked in here, so a new device just opens the app
    and logs in — no sheet URL or script URL to paste, ever. Replace the
    placeholder below with your deployed Worker URL (no trailing slash). */
-const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
+const WORKER_URL = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
 
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
@@ -226,6 +226,7 @@ export default function TaskManager() {
   const [dirty, setDirty] = useState(false);
   const [autoSync, setAutoSync] = useState(false);
   const autoTimer = useRef(null);
+  const pulledOnce = useRef(false); // guard: don't push before we've pulled this session
   const [selectedIds, setSelectedIds] = useState({});
   const [openNotes, setOpenNotes] = useState({});
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox", notes: "" };
@@ -652,6 +653,7 @@ export default function TaskManager() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Sync failed");
       adopt(data);
+      pulledOnce.current = true; // safe to push now — we've seen the server
       if (!silent) flash(`Up to date — ${data.tasks.length} tasks`);
     } catch (e) {
       if (!silent) flash("Couldn't reach the server");
@@ -661,6 +663,10 @@ export default function TaskManager() {
 
   const syncPush = async () => {
     if (!session) return;
+    // Never overwrite the server with local state until we've read it once
+    // this session — this is what prevents an empty device from wiping
+    // everyone's lists.
+    if (!pulledOnce.current) { await workerPull(true); if (!pulledOnce.current) return; }
     setSyncing(true);
     try {
       const res = await fetch(WORKER_URL + "/sync", {
@@ -1661,253 +1667,4 @@ export default function TaskManager() {
                 {stats.last7.map((d) => (
                   <div key={d.date} style={S.col}>
                     <span style={{ fontSize: 11, color: T.mute }}>{d.count || ""}</span>
-                    <div style={S.colBar((d.count / maxLast7) * 100, T.accent)} />
-                    <span style={S.colLbl}>{d.date === today ? "Today" : dayLabel(d.date)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Open tasks by category</h3>
-              {stats.catRows.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No open tasks.</div>}
-              {stats.catRows.map(([cat, n]) => (
-                <div key={cat} style={S.barRow}>
-                  <span style={S.barLbl}>{cat}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, colorMap))} /></div>
-                  <span style={S.barVal}>{n}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Unscheduled</h3>
-              {Object.entries(stats.buckets).map(([b, n]) => (
-                <div key={b} style={S.barRow}>
-                  <span style={S.barLbl}>{b}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / Math.max(1, ...Object.values(stats.buckets))) * 100, T.amber)} /></div>
-                  <span style={S.barVal}>{n}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* ---------- SETTINGS VIEW ---------- */}
-        {view === "Settings" && (
-          <>
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Appearance</h3>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 14.5 }}>Dark mode</span>
-                <button style={S.footBtn} onClick={() => setTheme(!dark)}>{dark ? "On · switch to light" : "Off · switch to dark"}</button>
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Categories</h3>
-              {categories.filter((c) => c !== "All").length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No categories yet — they appear here once you use them on tasks.</div>}
-              {categories.filter((c) => c !== "All").map((c) => (
-                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === c ? null : c)}
-                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
-                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                    <span style={{ ...S.count }}>{tasks.filter((t) => t.category === c).length}</span>
-                    <button style={S.iconBtn} onClick={() => renameField("category", c)} title="Rename">✎</button>
-                    <button style={S.iconBtn} onClick={() => deleteField("category", c)} title="Remove">✕</button>
-                  </div>
-                  {pickerFor === c && (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
-                      {HUES.map((h, i) => (
-                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
-                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
-                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
-                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "10px 0 0" }}>Colors are assigned automatically and kept distinct. Tap a dot to pick a different color. Rename applies to every task using it.</p>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Sub categories</h3>
-              {subSuggestions.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No sub categories yet.</div>}
-              {subSuggestions.map((c) => (
-                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === "sub:" + c ? null : "sub:" + c)}
-                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === "sub:" + c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
-                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                    <span style={{ ...S.count }}>{tasks.filter((t) => t.subCategory === c).length}</span>
-                    <button style={S.iconBtn} onClick={() => renameField("subCategory", c)} title="Rename">✎</button>
-                    <button style={S.iconBtn} onClick={() => deleteField("subCategory", c)} title="Remove">✕</button>
-                  </div>
-                  {pickerFor === "sub:" + c && (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
-                      {HUES.map((h, i) => (
-                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
-                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
-                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
-                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Account &amp; sync</h3>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{session ? session.name : "Not signed in"}</div>
-                  <div style={{ fontSize: 12.5, color: T.mute }}>{session ? (session.role === "owner" ? "Owner" : "Member") : ""}</div>
-                </div>
-                {session && <button style={S.footBtn} onClick={logout}>Log out</button>}
-              </div>
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "0 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <span style={{ fontSize: 14 }}>Auto-sync (push ~8s after changes)</span>
-                <button style={S.footBtn} onClick={() => { const v = !autoSync; setAutoSync(v); savePrefs({ autoSync: v }); }}>{autoSync ? "On" : "Off"}</button>
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={S.addBtn} onClick={syncPush} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
-                <button style={S.footBtn} onClick={syncPull} disabled={syncing}>Refresh from server</button>
-              </div>
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "12px 0 0", lineHeight: 1.5 }}>
-                Your tasks are private to you. Lists you own or that others share with you sync automatically. Nothing to configure on this device — just stay logged in.
-              </p>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Data</h3>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={S.footBtn} onClick={() => setModal("export")}>Export CSV</button>
-                <button style={S.footBtn} onClick={() => setModal("import")}>Import CSV</button>
-                <button style={S.footBtn} onClick={clearDone}>Clear completed</button>
-                <button style={{ ...S.footBtn, color: T.danger, borderColor: T.danger }} onClick={deleteAll}>Delete all tasks</button>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* bottom navigation */}
-      <div style={{ ...S.footer, justifyContent: "space-around", padding: "6px 8px calc(6px + env(safe-area-inset-bottom))" }}>
-        {NAV.map((v) => (
-          <button key={v} onClick={() => switchView(v)}
-            style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",
-              display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "4px 10px",
-              color: view === v ? T.accent : T.mute, fontWeight: view === v ? 700 : 500 }}>
-            <span style={{ fontSize: 18, lineHeight: 1 }}>{NAV_ICON[v]}</span>
-            <span style={{ fontSize: 11 }}>{v}</span>
-          </button>
-        ))}
-      </div>
-
-      {toast && (
-        <div style={{ ...S.toast, display: "flex", alignItems: "center", gap: 12 }}>
-          {typeof toast === "object" ? toast.msg : toast}
-          {typeof toast === "object" && (
-            <button style={{ background: "none", border: "none", color: T.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5 }}
-              onClick={() => { toast.fn(); setToast(""); }}>Undo</button>
-          )}
-        </div>
-      )}
-
-      {/* export modal */}
-      {modal === "export" && (
-        <div style={S.modalBg} onClick={() => setModal(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Export to Google Sheets</h3>
-            <p style={{ fontSize: 14, color: T.mute }}>Download the CSV and import it in Sheets (File → Import), or copy the text and paste into a sheet, then Data → Split text to columns.</p>
-            <textarea ref={csvRef} style={S.textarea} readOnly value={toCSV(tasks)} />
-            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-              <button style={S.addBtn} onClick={downloadCSV}>Download CSV</button>
-              <button style={S.footBtn} onClick={copyCSV}>{copied ? "Copied ✓" : "Copy"}</button>
-              <button style={S.footBtn} onClick={() => setModal("import")}>Import…</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* import modal */}
-      {modal === "import" && (
-        <div style={S.modalBg} onClick={() => setModal(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Import CSV</h3>
-            <p style={{ fontSize: 14, color: T.mute }}>Header row: Task, Category, Sub Category, Due Date, Due Time, Reminder Date, Reminder Time, Recurrence, Bucket, Status, Created, Completed. Dates YYYY-MM-DD, times HH:MM.</p>
-            <textarea style={S.textarea} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste CSV here…" />
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button style={S.addBtn} onClick={doImport}>Import</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* edit modal */}
-      {editing && (
-        <div style={S.modalBg} onClick={() => setEditing(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Edit task</h3>
-            <div style={{ marginBottom: 10 }}>
-              <label style={S.label}>Task</label>
-              <input style={S.input} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <label style={S.label}>Notes / items</label>
-              <textarea style={{ ...S.textarea, height: 90 }} value={editing.notes || ""} placeholder="Anything extra — items from a list land here"
-                onChange={(e) => setEditing({ ...editing, notes: e.target.value })} />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {editFields(editing, setEditing)}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button style={S.addBtn} onClick={saveEdit}>Save changes</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setEditing(null)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* share list modal */}
-      {shareFor && (() => {
-        const l = lists.find((x) => x.id === shareFor);
-        if (!l) return null;
-        const others = members.filter((m) => !session || m !== session.name);
-        return (
-          <div style={S.modalBg} onClick={() => setShareFor(null)}>
-            <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-              <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Share "{l.name}"</h3>
-              <p style={{ fontSize: 14, color: T.mute }}>Anyone you pick can view and edit this list's items. Only you can rename, re-share, or delete it. Changes sync on the next push.</p>
-              {others.length === 0 && <div style={S.empty}>No other users yet. Add them in the Worker's USERS setting.</div>}
-              <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
-                {others.map((m) => {
-                  const on = (l.sharedWith || []).includes(m);
-                  return (
-                    <button key={m} onClick={() => toggleShare(l.id, m)}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                        border: `1px solid ${on ? T.accent : T.line}`, background: on ? T.accentSoft : T.card,
-                        color: T.ink, borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 15 }}>
-                      <span>{m}</span>
-                      <span style={{ color: on ? T.accent : T.mute, fontWeight: 600 }}>{on ? "Shared ✓" : "Share"}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                <button style={S.addBtn} onClick={() => { setShareFor(null); syncPush(); }}>Done &amp; sync</button>
-                <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setShareFor(null)}>Close</button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-    </div>
-  );
-}
+                    <div style={S.colBar((d.count / maxLast7

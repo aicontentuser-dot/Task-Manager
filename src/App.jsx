@@ -22,7 +22,7 @@ const store =
    The Worker URL is baked in here, so a new device just opens the app
    and logs in — no sheet URL or script URL to paste, ever. Replace the
    placeholder below with your deployed Worker URL (no trailing slash). */
-const WORKER_URL = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
 
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over

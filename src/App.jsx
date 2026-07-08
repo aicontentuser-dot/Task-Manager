@@ -22,7 +22,7 @@ const store =
    The Worker URL is baked in here, so a new device just opens the app
    and logs in — no sheet URL or script URL to paste, ever. Replace the
    placeholder below with your deployed Worker URL (no trailing slash). */
-const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
+const WORKER_URL = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
 
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
@@ -230,6 +230,7 @@ export default function TaskManager() {
   const [newItemUnit, setNewItemUnit] = useState("");
   const [selectMode, setSelectMode] = useState(false);
   const [reorderMode, setReorderMode] = useState(false);
+  const [listsReorderMode, setListsReorderMode] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [autoSync, setAutoSync] = useState(false);
   const autoTimer = useRef(null);
@@ -306,6 +307,7 @@ export default function TaskManager() {
           if (Array.isArray(prefs.listCats)) setListCats(prefs.listCats);
           if (prefs.workerUrl) setWorkerUrl(prefs.workerUrl);
           if (prefs.hideChecked === true) setHideChecked(true);
+          if (prefs.catCollapsed && typeof prefs.catCollapsed === "object") setCatCollapsed(prefs.catCollapsed);
           if (prefs.autoSync === true) setAutoSync(true);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
@@ -378,7 +380,7 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, ...patch };
+    const p = { dark, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, catCollapsed, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
@@ -768,6 +770,7 @@ export default function TaskManager() {
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
   useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); setReorderMode(false); }, [activeListId]);
+  useEffect(() => { if (view !== "Lists") setListsReorderMode(false); }, [view]);
 
   /* auto-sync: quietly push a few seconds after the last change */
   useEffect(() => {
@@ -822,6 +825,20 @@ export default function TaskManager() {
       const tmp = items[idx]; items[idx] = items[j]; items[j] = tmp;
       return { ...l, items };
     }));
+  };
+  // Reorders a list among the others in its own category (mirrors moveItem's
+  // within-section swap), so category groups on the Lists screen keep their
+  // own independent order.
+  const moveList = (listId, dir) => {
+    const next = [...lists];
+    const idx = next.findIndex((l) => l.id === listId);
+    if (idx < 0) return;
+    const cat = next[idx].category || "";
+    let j = idx + dir;
+    while (j >= 0 && j < next.length && (next[j].category || "") !== cat) j += dir;
+    if (j < 0 || j >= next.length) return;
+    const tmp = next[idx]; next[idx] = next[j]; next[j] = tmp;
+    persistLists(next);
   };
   const editItemUrl = (listId, itemId, cur) => {
     const s = window.prompt("Link (blank to clear):", cur || "https://");
@@ -1577,7 +1594,70 @@ export default function TaskManager() {
         {/* ---------- LISTS VIEW ---------- */}
         {view === "Lists" && !activeList && (
           <>
-            <div style={{ ...S.addCard }}>
+            {lists.length === 0 && <div style={S.empty}>No lists yet. Create reusable checklists — groceries, packing, routines — and promote items to Tasks when they need a date.</div>}
+            {lists.length > 1 && (
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+                <button style={S.footBtn} onClick={() => setListsReorderMode(!listsReorderMode)}>{listsReorderMode ? "Done" : "Order"}</button>
+              </div>
+            )}
+            {(() => {
+              const renderCard = (l) => {
+                const done = l.items.filter((i) => i.checked).length;
+                if (listsReorderMode) {
+                  return (
+                    <div key={l.id} style={{ ...S.card(false, dotColor(l.name, dark, colorMap)), alignItems: "center" }}>
+                      <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
+                      <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={() => moveList(l.id, -1)} aria-label="Move up">↑</button>
+                      <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={() => moveList(l.id, 1)} aria-label="Move down">↓</button>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={l.id} style={{ ...S.card(false, dotColor(l.name, dark, colorMap)), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
+                    <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
+                      <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{(LIST_TYPES[l.type] || LIST_TYPES.checklist).icon} {(LIST_TYPES[l.type] || LIST_TYPES.checklist).label} · {done}/{l.items.length} checked</div>
+                    </div>
+                    <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); renameList(l.id); }} title="Rename">✎</button>
+                    <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); deleteList(l.id); }} title="Delete">✕</button>
+                    <span style={{ color: T.mute, fontSize: 16 }}>›</span>
+                  </div>
+                );
+              };
+              // build groups: each defined category in order, then "Other" for the rest
+              const groups = [];
+              listCats.forEach((c) => groups.push([c, lists.filter((l) => (l.category || "") === c)]));
+              const otherLists = lists.filter((l) => !listCats.includes(l.category || ""));
+              if (otherLists.length) groups.push([listCats.length ? "Other" : "", otherLists]);
+              // if no categories are defined at all, just show a flat list
+              if (!listCats.length) return lists.map(renderCard);
+              return groups.map(([cat, group]) => {
+                if (!group.length) return null;
+                // Categories default to collapsed until the person opens one —
+                // only an explicit false in catCollapsed counts as "expanded".
+                // While reordering, every group is forced open so there's
+                // nothing hidden to drag past.
+                const collapsed = listsReorderMode ? false : (cat in catCollapsed ? catCollapsed[cat] : true);
+                return (
+                  <section key={cat || "__other"} style={{ marginTop: 8 }}>
+                    <button
+                      onClick={listsReorderMode ? undefined : () => {
+                        const next = { ...catCollapsed, [cat]: !collapsed };
+                        setCatCollapsed(next); savePrefs({ catCollapsed: next });
+                      }}
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: listsReorderMode ? "default" : "pointer", fontFamily: "inherit", padding: "6px 2px", color: T.ink }}>
+                      <span style={{ fontSize: 12, color: T.mute, width: 12 }}>{collapsed ? "▸" : "▾"}</span>
+                      <span style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.04em" }}>{cat || "Uncategorized"}</span>
+                      <span style={S.count}>{group.length}</span>
+                    </button>
+                    {!collapsed && group.map(renderCard)}
+                  </section>
+                );
+              });
+            })()}
+            <div style={{ ...S.addCard, marginTop: 14 }}>
               <div style={{ display: "flex", gap: 8 }}>
                 <input style={S.addInput} placeholder="New list (e.g. Grocery, Travel packing)…" value={newListName}
                   onChange={(e) => setNewListName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addList()} />
@@ -1604,581 +1684,4 @@ export default function TaskManager() {
                     <button key={f} style={S.qChip(newListFields.includes(f))}
                       onClick={() => setNewListFields(newListFields.includes(f) ? newListFields.filter((x) => x !== f) : [...newListFields, f])}>{f}</button>
                   ))}
-                  <span style={{ fontSize: 12, color: T.mute }}>(sections always available)</span>
-                </div>
-              )}
-            </div>
-            {lists.length === 0 && <div style={S.empty}>No lists yet. Create reusable checklists — groceries, packing, routines — and promote items to Tasks when they need a date.</div>}
-            {(() => {
-              const renderCard = (l) => {
-                const done = l.items.filter((i) => i.checked).length;
-                return (
-                  <div key={l.id} style={{ ...S.card(false, dotColor(l.name, dark, colorMap)), cursor: "pointer", alignItems: "center" }} onClick={() => setActiveListId(l.id)}>
-                    <span style={{ width: 18, height: 18, minWidth: 18, borderRadius: 9, background: dotColor(l.name, dark, colorMap) }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 15.5, fontWeight: 600 }}>{l.name}</div>
-                      <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{(LIST_TYPES[l.type] || LIST_TYPES.checklist).icon} {(LIST_TYPES[l.type] || LIST_TYPES.checklist).label} · {done}/{l.items.length} checked</div>
-                    </div>
-                    <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); renameList(l.id); }} title="Rename">✎</button>
-                    <button style={S.iconBtn} onClick={(e) => { e.stopPropagation(); deleteList(l.id); }} title="Delete">✕</button>
-                    <span style={{ color: T.mute, fontSize: 16 }}>›</span>
-                  </div>
-                );
-              };
-              // build groups: each defined category in order, then "Other" for the rest
-              const groups = [];
-              listCats.forEach((c) => groups.push([c, lists.filter((l) => (l.category || "") === c)]));
-              const otherLists = lists.filter((l) => !listCats.includes(l.category || ""));
-              if (otherLists.length) groups.push([listCats.length ? "Other" : "", otherLists]);
-              // if no categories are defined at all, just show a flat list
-              if (!listCats.length) return lists.map(renderCard);
-              return groups.map(([cat, group]) => {
-                if (!group.length) return null;
-                const collapsed = catCollapsed[cat];
-                return (
-                  <section key={cat || "__other"} style={{ marginTop: 8 }}>
-                    <button
-                      onClick={() => setCatCollapsed((m) => ({ ...m, [cat]: !m[cat] }))}
-                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", padding: "6px 2px", color: T.ink }}>
-                      <span style={{ fontSize: 12, color: T.mute, width: 12 }}>{collapsed ? "▸" : "▾"}</span>
-                      <span style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.04em" }}>{cat || "Uncategorized"}</span>
-                      <span style={S.count}>{group.length}</span>
-                    </button>
-                    {!collapsed && group.map(renderCard)}
-                  </section>
-                );
-              });
-            })()}
-          </>
-        )}
-
-        {view === "Lists" && activeList && (
-          <>
-            <div style={{ textAlign: "center", marginTop: 14 }}>
-              <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 800, fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 5, background: dotColor(activeList.name, dark, colorMap), display: "inline-block" }} />{activeList.name}
-              </div>
-              <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-              <button style={S.footBtn} onClick={() => setActiveListId(null)}>‹ Lists</button>
-              {!selectMode && !reorderMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
-              {!selectMode && <button style={S.footBtn} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
-              {!selectMode && !reorderMode && iOwn(activeList) && (
-                <button style={{ ...S.footBtn, borderColor: (activeList.sharedWith || []).length ? T.accent : T.line, color: (activeList.sharedWith || []).length ? T.accent : T.ink }}
-                  onClick={() => setShareFor(activeList.id)} title="Share this list with other users">
-                  {(activeList.sharedWith || []).length ? `Shared · ${(activeList.sharedWith || []).length}` : "Share"}
-                </button>
-              )}
-              {!selectMode && !reorderMode && !iOwn(activeList) && (
-                <span style={{ ...S.tag(T.accentSoft, T.accent), alignSelf: "center" }}>Shared by {activeList.owner}</span>
-              )}
-              {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
-              {!selectMode && !reorderMode && activeList.items.some((i) => i.checked) && (
-                <button style={S.footBtn} onClick={() => { const v = !hideChecked; setHideChecked(v); savePrefs({ hideChecked: v }); }} title="Show or hide checked items">
-                  {hideChecked ? "Show done" : "Hide done"}
-                </button>
-              )}
-              {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
-              {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
-            </div>
-            {!selectMode && !reorderMode && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-                <span style={{ fontSize: 12, color: T.mute }}>Type:</span>
-                <select value={activeList.type || "checklist"} onChange={(e) => setListType(activeList.id, e.target.value)}
-                  style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
-                  {Object.entries(LIST_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-                </select>
-                {activeList.type === "custom" && CUSTOM_CHOICES.map((f) => (
-                  <button key={f} style={S.qChip((activeList.fields || []).includes(f))} onClick={() => toggleListField(activeList.id, f)}>{f}</button>
-                ))}
-                {listCats.length > 0 && <>
-                  <span style={{ fontSize: 12, color: T.mute, marginLeft: 6 }}>Category:</span>
-                  <select value={listCats.includes(activeList.category) ? activeList.category : ""} onChange={(e) => setListCategory(activeList.id, e.target.value)}
-                    style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
-                    <option value="">None</option>
-                    {listCats.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </>}
-              </div>
-            )}
-            {selectMode && (() => {
-              const n = Object.values(selectedIds).filter(Boolean).length;
-              const total = activeList.items.length;
-              return (
-                <div style={{ ...S.addCard, display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ flex: 1, fontSize: 14, color: n ? T.ink : T.mute }}>
-                      {n ? `${n} of ${total} selected` : "Tap items below to select them"}
-                    </span>
-                    <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={n === total ? selectNoItems : selectAllItems}>
-                      {n === total ? "Clear" : "All"}
-                    </button>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button style={{ ...S.footBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={copySelected}>Copy</button>
-                    <button style={{ ...S.footBtn, opacity: n ? 1 : 0.5 }} disabled={!n} onClick={shareSelected}>Share</button>
-                    <button style={{ ...S.addBtn, marginLeft: "auto", opacity: n ? 1 : 0.5 }} disabled={!n} onClick={createTaskFromSelected}>→ Task</button>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {activeList.items.length === 0 && <div style={S.empty}>Empty list — add items below.</div>}
-            <div style={{ marginTop: 12 }}>
-              {sectionsOf(activeList, reorderMode).map(([sec, allItems]) => {
-                const items = (!selectMode && !reorderMode && hideChecked) ? allItems.filter((i) => !i.checked) : allItems;
-                if (!items.length) return null;
-                return (
-                <section key={sec || "__none"}>
-                  {sec && (
-                    <h2 style={S.gTitle(false, false)}>
-                      <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 4, background: dotColor(sec, dark, colorMap) }} />
-                      {sec} <span style={S.count}>{allItems.filter((i) => !i.checked).length}/{allItems.length}</span>
-                    </h2>
-                  )}
-                  {items.map((it) => reorderMode ? (
-                    <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
-                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere", opacity: it.checked ? 0.55 : 1 }}>{it.text}</div>
-                      {(it.qty || it.unit) && <span style={S.tag(T.tagBg, T.mute)}>{[it.qty, it.unit].filter(Boolean).join(" ")}</span>}
-                      <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={() => moveItem(activeList.id, it.id, -1)} aria-label="Move up">↑</button>
-                      <button style={{ ...S.footBtn, padding: "6px 12px" }} onClick={() => moveItem(activeList.id, it.id, 1)} aria-label="Move down">↓</button>
-                    </div>
-                  ) : selectMode ? (
-                    <div key={it.id} onClick={() => toggleSelect(it.id)}
-                      style={{ ...S.card(false), alignItems: "center", cursor: "pointer",
-                        border: `1.5px solid ${selectedIds[it.id] ? T.accent : T.line}`,
-                        background: selectedIds[it.id] ? T.accentSoft : T.card }}>
-                      <span style={{ width: 22, height: 22, minWidth: 22, borderRadius: 11, border: `2px solid ${selectedIds[it.id] ? T.accent : T.line}`, background: selectedIds[it.id] ? T.accent : "transparent", color: "#fff", fontSize: 13, lineHeight: "20px", textAlign: "center", pointerEvents: "none", marginTop: 2 }}>{selectedIds[it.id] ? "✓" : ""}</span>
-                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, overflowWrap: "anywhere", opacity: it.checked ? 0.6 : 1, textDecoration: it.checked ? "line-through" : "none" }}>{it.text}</div>
-                      {(it.qty || it.unit) && <span style={S.tag(T.tagBg, T.mute)}>{[it.qty, it.unit].filter(Boolean).join(" ")}</span>}
-                      {it.price && <span style={S.tag(T.tagBg, T.mute)}>{it.price}</span>}
-                    </div>
-                  ) : (
-                    <div key={it.id} style={{ ...S.card(it.checked), alignItems: "center" }}>
-                      <button style={S.check(it.checked)} onClick={() => toggleItem(activeList.id, it.id)}>{it.checked ? "✓" : ""}</button>
-                      <div style={{ flex: 1, minWidth: 0, fontSize: 15, textDecoration: it.checked ? "line-through" : "none", overflowWrap: "anywhere" }}
-                        onClick={() => editItemSection(activeList.id, it.id, it)} title="Tap to edit">{it.text}</div>
-                      {(listExtras(activeList).includes("qty") || it.qty || it.unit) && (
-                        <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                          onClick={() => editItemQty(activeList.id, it.id, [it.qty, it.unit].filter(Boolean).join(" "))}
-                          title="Tap to edit quantity">{[it.qty, it.unit].filter(Boolean).join(" ") || "+ qty"}</button>
-                      )}
-                      {(listExtras(activeList).includes("price") || it.price) && (
-                        <button style={{ ...S.tag(T.tagBg, T.mute), border: "none", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                          onClick={() => editItemPrice(activeList.id, it.id, it.price)}
-                          title="Tap to edit price">{it.price || "+ price"}</button>
-                      )}
-                      {it.url && (
-                        <a href={it.url} target="_blank" rel="noopener noreferrer"
-                          style={{ ...S.tag(T.accentSoft, T.accent), textDecoration: "none", whiteSpace: "nowrap" }} title={it.url}>↗</a>
-                      )}
-                      {listExtras(activeList).includes("url") && (
-                        <button style={S.iconBtn} onClick={() => editItemUrl(activeList.id, it.id, it.url)} title={it.url ? "Edit link" : "Add link"}>🔗</button>
-                      )}
-                      <button style={{ ...S.iconBtn, color: T.accent, fontWeight: 700 }} onClick={() => promoteItem(activeList, it)} title="Add to Tasks">➔ Task</button>
-                      <button style={S.iconBtn} onClick={() => deleteItem(activeList.id, it.id)} title="Remove">✕</button>
-                    </div>
-                  ))}
-                </section>
-                );
-              })}
-            </div>
-            <p style={{ fontSize: 12.5, color: T.mute, marginTop: 12, lineHeight: 1.5 }}>➔ Task copies an item into your Tasks inbox — category "{activeList.name}", sub category from its section. The item stays here, so the list remains reusable. Tap an item’s text to change its section.</p>
-            {!selectMode && !reorderMode && <div style={{ ...S.addCard, borderColor: T.accent, borderWidth: 1.5, boxShadow: `0 1px 6px ${dark ? "rgba(63,174,140,0.15)" : "rgba(19,106,85,0.12)"}` }}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input ref={itemInputRef} style={{ ...S.addInput, fontWeight: 500 }} placeholder="＋ Add an item…" value={newItemText}
-                  onChange={(e) => setNewItemText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                <button style={S.addBtn} onClick={addItem}>Add</button>
-              </div>
-              <button
-                style={{ background: "none", border: "none", color: T.accent, fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "6px 2px 0", alignSelf: "flex-start" }}
-                onClick={() => setBulkOpen((v) => !v)}>
-                {bulkOpen ? "× Close bulk add" : "≣ Paste many at once"}
-              </button>
-              {bulkOpen && (
-                <div style={{ marginTop: 6 }}>
-                  <textarea
-                    style={{ ...S.input, width: "100%", minHeight: 120, resize: "vertical", fontFamily: "inherit", lineHeight: 1.5, boxSizing: "border-box" }}
-                    placeholder={"One item per line, e.g.\nMilk\nEggs\nBread\n\nPaste a whole list here and each line becomes an item."}
-                    value={bulkText} onChange={(e) => setBulkText(e.target.value)} autoFocus />
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
-                    <button style={{ ...S.addBtn, opacity: bulkText.trim() ? 1 : 0.5 }} disabled={!bulkText.trim()} onClick={addBulk}>
-                      Add {bulkText.split("\n").map((s) => s.trim()).filter(Boolean).length || ""} item{bulkText.split("\n").map((s) => s.trim()).filter(Boolean).length === 1 ? "" : "s"}
-                    </button>
-                    <span style={{ fontSize: 12, color: T.mute }}>
-                      {newItemSection.trim() ? `→ into "${newItemSection.trim()}"` : "→ no section (set one below to group them)"}
-                    </span>
-                  </div>
-                </div>
-              )}
-              {(() => {
-                const ex = listExtras(activeList);
-                return (
-                  <>
-                    <div style={{ fontSize: 10.5, fontWeight: 600, color: T.mute, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10 }}>Details (optional)</div>
-                    <div style={{ display: "flex", gap: 8, marginTop: 4, opacity: 0.85 }}>
-                      <input style={{ ...S.input, flex: 2 }} list="listsections" placeholder="Section (optional)"
-                        value={newItemSection} onChange={(e) => setNewItemSection(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                      {ex.includes("qty") && <input style={{ ...S.input, flex: 1 }} placeholder="Qty" inputMode="decimal"
-                        value={newItemQty} onChange={(e) => setNewItemQty(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
-                      {ex.includes("unit") && <input style={{ ...S.input, flex: 1.2 }} list="listunits" placeholder="Unit"
-                        value={newItemUnit} onChange={(e) => setNewItemUnit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
-                      {ex.includes("price") && <input style={{ ...S.input, flex: 1.2 }} placeholder="Price"
-                        value={newItemPrice} onChange={(e) => setNewItemPrice(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />}
-                    </div>
-                    {ex.includes("url") && (
-                      <input style={{ ...S.input, marginTop: 8 }} type="url" placeholder="Link (https://…)"
-                        value={newItemUrl} onChange={(e) => setNewItemUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-                    )}
-                  </>
-                );
-              })()}
-              <datalist id="listsections">
-                {Array.from(new Set(activeList.items.map((i) => i.section).filter(Boolean))).map((s) => <option key={s} value={s} />)}
-              </datalist>
-              <datalist id="listunits">
-                {Array.from(new Set(["kg", "g", "L", "ml", "pcs", "pack", "box", "dozen", ...activeList.items.map((i) => i.unit).filter(Boolean)])).map((u) => <option key={u} value={u} />)}
-              </datalist>
-            </div>}
-          </>
-        )}
-
-        {/* ---------- DASHBOARD VIEW ---------- */}
-        {view === "Dashboard" && (
-          <>
-            <div style={S.statGrid}>
-              <div style={{ ...S.statCard(T.danger), cursor: "pointer" }} title="View overdue tasks"
-                onClick={() => goToTasksGroup({ groupKeys: ["Overdue"] })}>
-                <div style={{ ...S.statNum, color: stats.overdue ? T.danger : "inherit" }}>{stats.overdue}</div>
-                <div style={S.statLbl}>Overdue</div>
-              </div>
-              <div style={{ ...S.statCard(T.accent), cursor: "pointer" }} title="View tasks due today"
-                onClick={() => goToTasksGroup({ groupKeys: ["Today"] })}>
-                <div style={S.statNum}>{stats.dueToday}</div>
-                <div style={S.statLbl}>Due today</div>
-              </div>
-              <div style={{ ...S.statCard(T.amber), cursor: "pointer" }} title="View tasks due in the next 7 days"
-                onClick={() => goToTasksGroup({ groupKeys: ["Today", "Tomorrow", "This week"] })}>
-                <div style={S.statNum}>{stats.week}</div>
-                <div style={S.statLbl}>Due in next 7 days</div>
-              </div>
-              <div style={{ ...S.statCard(T.line), cursor: "pointer" }} title="View tasks completed this week"
-                onClick={() => goToTasksGroup({ status: "Done" })}>
-                <div style={S.statNum}>{stats.doneWeek}</div>
-                <div style={S.statLbl}>Completed this week</div>
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Load — next 7 days</h3>
-              <div style={S.colWrap}>
-                {stats.next7.map((d) => (
-                  <div key={d.date} style={S.col}>
-                    <span style={{ fontSize: 11, color: T.mute }}>{d.count || ""}</span>
-                    <div style={S.colBar((d.count / maxNext7) * 100, d.date === today ? T.accent : T.tagBg === "#EFEEE7" ? "#CFCEC2" : "#3E453E")} />
-                    <span style={S.colLbl}>{d.date === today ? "Today" : dayLabel(d.date)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Completed — last 7 days</h3>
-              <div style={S.colWrap}>
-                {stats.last7.map((d) => (
-                  <div key={d.date} style={S.col}>
-                    <span style={{ fontSize: 11, color: T.mute }}>{d.count || ""}</span>
-                    <div style={S.colBar((d.count / maxLast7) * 100, T.accent)} />
-                    <span style={S.colLbl}>{d.date === today ? "Today" : dayLabel(d.date)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Open tasks by category</h3>
-              {stats.catRows.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No open tasks.</div>}
-              {stats.catRows.map(([cat, n]) => (
-                <div key={cat} style={{ ...S.barRow, cursor: "pointer" }} title={`View open "${cat}" tasks`}
-                  onClick={() => goToTasksGroup({ cat })}>
-                  <span style={S.barLbl}>{cat}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, colorMap))} /></div>
-                  <span style={S.barVal}>{n}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Unscheduled</h3>
-              {Object.entries(stats.buckets).map(([b, n]) => (
-                <div key={b} style={{ ...S.barRow, cursor: "pointer" }} title={`View "${b}" tasks`}
-                  onClick={() => goToTasksGroup({ groupKeys: [b] })}>
-                  <span style={S.barLbl}>{b}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / Math.max(1, ...Object.values(stats.buckets))) * 100, T.amber)} /></div>
-                  <span style={S.barVal}>{n}</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* ---------- SETTINGS VIEW ---------- */}
-        {view === "Settings" && (
-          <>
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Appearance</h3>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 14.5 }}>Dark mode</span>
-                <button style={S.footBtn} onClick={() => setTheme(!dark)}>{dark ? "On · switch to light" : "Off · switch to dark"}</button>
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>List categories</h3>
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "0 0 10px", lineHeight: 1.5 }}>Group your lists on the Lists screen. Removing a category here just moves its lists to “Other” — nothing is deleted.</p>
-              {listCats.length === 0 && <div style={{ color: T.mute, fontSize: 14, marginBottom: 8 }}>No categories yet — add a few below.</div>}
-              {listCats.map((c) => (
-                <div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.line}` }}>
-                  <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                  <span style={S.count}>{lists.filter((l) => (l.category || "") === c).length}</span>
-                  <button style={S.iconBtn} onClick={() => removeListCat(c)} title="Remove from the set">✕</button>
-                </div>
-              ))}
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <input style={S.addInput} placeholder="Add a category (e.g. Work)…" value={newCatInput}
-                  onChange={(e) => setNewCatInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addListCat()} />
-                <button style={S.addBtn} onClick={addListCat}>Add</button>
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Categories</h3>
-              {categories.filter((c) => c !== "All").length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No categories yet — they appear here once you use them on tasks.</div>}
-              {categories.filter((c) => c !== "All").map((c) => (
-                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === c ? null : c)}
-                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
-                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                    <span style={{ ...S.count }}>{tasks.filter((t) => t.category === c).length}</span>
-                    <button style={S.iconBtn} onClick={() => renameField("category", c)} title="Rename">✎</button>
-                    <button style={S.iconBtn} onClick={() => deleteField("category", c)} title="Remove">✕</button>
-                  </div>
-                  {pickerFor === c && (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
-                      {HUES.map((h, i) => (
-                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
-                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
-                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
-                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "10px 0 0" }}>Colors are assigned automatically and kept distinct. Tap a dot to pick a different color. Rename applies to every task using it.</p>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Sub categories</h3>
-              {subSuggestions.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No sub categories yet.</div>}
-              {subSuggestions.map((c) => (
-                <div key={c} style={{ borderBottom: `1px solid ${T.line}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-                    <button title="Pick color" onClick={() => setPickerFor(pickerFor === "sub:" + c ? null : "sub:" + c)}
-                      style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", background: dotColor(c, dark, colorMap), outline: pickerFor === "sub:" + c ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
-                    <span style={{ flex: 1, fontSize: 14.5 }}>{c}</span>
-                    <span style={{ ...S.count }}>{tasks.filter((t) => t.subCategory === c).length}</span>
-                    <button style={S.iconBtn} onClick={() => renameField("subCategory", c)} title="Rename">✎</button>
-                    <button style={S.iconBtn} onClick={() => deleteField("subCategory", c)} title="Remove">✕</button>
-                  </div>
-                  {pickerFor === "sub:" + c && (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 12px 2px" }}>
-                      {HUES.map((h, i) => (
-                        <button key={h} onClick={() => setColor(c, i)} title={`Color ${i + 1}`}
-                          style={{ width: 26, height: 26, borderRadius: 13, cursor: "pointer",
-                            background: `hsl(${h},${dark ? 50 : 60}%,${dark ? 62 : 45}%)`,
-                            border: colorMap[c] === i ? `2px solid ${T.ink}` : `2px solid transparent` }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Account &amp; sync</h3>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{session ? session.name : "Not signed in"}</div>
-                  <div style={{ fontSize: 12.5, color: T.mute }}>{session ? (session.role === "owner" ? "Owner" : "Member") : ""}</div>
-                </div>
-                {session && <button style={S.footBtn} onClick={logout}>Log out</button>}
-              </div>
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "0 0 10px" }}>{lastSync ? `Last synced: ${lastSync}` : "Not synced yet."}</p>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <span style={{ fontSize: 14 }}>Auto-sync (push ~8s after changes)</span>
-                <button style={S.footBtn} onClick={() => { const v = !autoSync; setAutoSync(v); savePrefs({ autoSync: v }); }}>{autoSync ? "On" : "Off"}</button>
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={S.addBtn} onClick={syncPush} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
-                <button style={S.footBtn} onClick={syncPull} disabled={syncing}>Refresh from server</button>
-              </div>
-              <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.line}` }}>
-                <label style={S.label}>Server URL</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input style={S.addInput} placeholder="https://your-worker.workers.dev"
-                    value={urlDraft || workerUrl} onChange={(e) => setUrlDraft(e.target.value)} />
-                  <button style={S.addBtn} onClick={() => {
-                    const u = (urlDraft || workerUrl).trim().replace(/\/+$/, "");
-                    if (!/^https?:\/\//.test(u)) { flash("URL should start with https://"); return; }
-                    setWorkerUrl(u); savePrefs({ workerUrl: u }); setUrlDraft(""); pulledOnce.current = false;
-                    flash("Server URL saved");
-                  }}>Save</button>
-                </div>
-                <p style={{ fontSize: 12, color: (workerUrl.includes("REPLACE-WITH") ? T.danger : T.mute), margin: "6px 0 0", lineHeight: 1.5 }}>
-                  {workerUrl.includes("REPLACE-WITH")
-                    ? "⚠ Not set yet — paste your Cloudflare Worker URL here and Save. This is almost certainly why sync isn't working."
-                    : "Set once and it sticks, even when you redeploy the app."}
-                </p>
-              </div>
-              <p style={{ fontSize: 12.5, color: T.mute, margin: "12px 0 0", lineHeight: 1.5 }}>
-                Your tasks are private to you. Lists you own or that others share with you sync automatically.
-              </p>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Data</h3>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={S.footBtn} onClick={() => setModal("export")}>Export CSV</button>
-                <button style={S.footBtn} onClick={() => setModal("import")}>Import CSV</button>
-                <button style={S.footBtn} onClick={clearDone}>Clear completed</button>
-                <button style={{ ...S.footBtn, color: T.danger, borderColor: T.danger }} onClick={deleteAll}>Delete all tasks</button>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* floating add button (Tasks view) */}
-      {view === "Tasks" && !addOpen && !editing && (
-        <button style={S.fab} onClick={() => { setAddOpen(true); setAddFocus(true); }} aria-label="Add task" title="Add task">＋</button>
-      )}
-
-      {/* bottom navigation */}
-      <div style={{ ...S.footer, justifyContent: "space-around", padding: "6px 8px calc(6px + env(safe-area-inset-bottom))" }}>
-        {NAV.map((v) => (
-          <button key={v} onClick={() => switchView(v)}
-            style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",
-              display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "4px 10px",
-              color: view === v ? T.accent : T.mute, fontWeight: view === v ? 700 : 500 }}>
-            <span style={{ fontSize: 18, lineHeight: 1 }}>{NAV_ICON[v]}</span>
-            <span style={{ fontSize: 11 }}>{v}</span>
-          </button>
-        ))}
-      </div>
-
-      {toast && (
-        <div style={{ ...S.toast, display: "flex", alignItems: "center", gap: 12 }}>
-          {typeof toast === "object" ? toast.msg : toast}
-          {typeof toast === "object" && (
-            <button style={{ background: "none", border: "none", color: T.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5 }}
-              onClick={() => { toast.fn(); setToast(""); }}>Undo</button>
-          )}
-        </div>
-      )}
-
-      {/* export modal */}
-      {modal === "export" && (
-        <div style={S.modalBg} onClick={() => setModal(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Export to Google Sheets</h3>
-            <p style={{ fontSize: 14, color: T.mute }}>Download the CSV and import it in Sheets (File → Import), or copy the text and paste into a sheet, then Data → Split text to columns.</p>
-            <textarea ref={csvRef} style={S.textarea} readOnly value={toCSV(tasks)} />
-            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-              <button style={S.addBtn} onClick={downloadCSV}>Download CSV</button>
-              <button style={S.footBtn} onClick={copyCSV}>{copied ? "Copied ✓" : "Copy"}</button>
-              <button style={S.footBtn} onClick={() => setModal("import")}>Import…</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* import modal */}
-      {modal === "import" && (
-        <div style={S.modalBg} onClick={() => setModal(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Import CSV</h3>
-            <p style={{ fontSize: 14, color: T.mute }}>Header row: Task, Category, Sub Category, Due Date, Due Time, Reminder Date, Reminder Time, Recurrence, Bucket, Status, Created, Completed. Dates YYYY-MM-DD, times HH:MM.</p>
-            <textarea style={S.textarea} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste CSV here…" />
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <button style={S.addBtn} onClick={doImport}>Import</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setModal(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* edit modal */}
-      {editing && (
-        <div style={S.modalBg} onClick={() => setEditing(null)}>
-          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Edit task</h3>
-            <div style={{ marginBottom: 10 }}>
-              <label style={S.label}>Task</label>
-              <input style={S.input} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <label style={S.label}>Notes / items</label>
-              <textarea style={{ ...S.textarea, height: 90 }} value={editing.notes || ""} placeholder="Anything extra — items from a list land here"
-                onChange={(e) => setEditing({ ...editing, notes: e.target.value })} />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {editFields(editing, setEditing)}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button style={S.addBtn} onClick={saveEdit}>Save changes</button>
-              <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setEditing(null)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* share list modal */}
-      {shareFor && (() => {
-        const l = lists.find((x) => x.id === shareFor);
-        if (!l) return null;
-        const others = members.filter((m) => !session || m !== session.name);
-        return (
-          <div style={S.modalBg} onClick={() => setShareFor(null)}>
-            <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-              <h3 style={{ marginTop: 0, fontFamily: "'Archivo', sans-serif" }}>Share "{l.name}"</h3>
-              <p style={{ fontSize: 14, color: T.mute }}>Anyone you pick can view and edit this list's items. Only you can rename, re-share, or delete it. Changes sync on the next push.</p>
-              {others.length === 0 && <div style={S.empty}>No other users yet. Add them in the Worker's USERS setting.</div>}
-              <div style={{ display: "grid", gap: 8, marginTop: 6 }}>
-                {others.map((m) => {
-                  const on = (l.sharedWith || []).includes(m);
-                  return (
-                    <button key={m} onClick={() => toggleShare(l.id, m)}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                        border: `1px solid ${on ? T.accent : T.line}`, background: on ? T.accentSoft : T.card,
-                        color: T.ink, borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 15 }}>
-                      <span>{m}</span>
-                      <span style={{ color: on ? T.accent : T.mute, fontWeight: 600 }}>{on ? "Shared ✓" : "Share"}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                <button style={S.addBtn} onClick={() => { setShareFor(null); syncPush(); }}>Done &amp; sync</button>
-                <button style={{ ...S.footBtn, marginLeft: "auto" }} onClick={() => setShareFor(null)}>Close</button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-    </div>
-  );
-}
+                  <span style={{ fontSize: 12, color: 

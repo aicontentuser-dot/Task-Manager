@@ -209,6 +209,7 @@ export default function TaskManager() {
   const [taskMode, setTaskMode] = useState("List");
   const [focus, setFocus] = useState(true);
   const [collapsed, setCollapsed] = useState({});
+  const [compact, setCompact] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState({});
   const [lists, setLists] = useState([]);
   const [activeListId, setActiveListId] = useState(null);
@@ -299,6 +300,7 @@ export default function TaskManager() {
           if (prefs.taskMode === "List" || prefs.taskMode === "Table") setTaskMode(prefs.taskMode);
           if (prefs.focus === false) setFocus(false);
           if (prefs.collapsed && typeof prefs.collapsed === "object") setCollapsed(prefs.collapsed);
+          if (prefs.compact === true) setCompact(true);
           if (prefs.scriptUrl) setScriptUrl(prefs.scriptUrl);
           if (prefs.catColors) setCatColors(prefs.catColors);
           if (Array.isArray(prefs.listCats)) setListCats(prefs.listCats);
@@ -376,7 +378,7 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, taskMode, focus, collapsed, scriptUrl, lastSync, catColors, autoSync, ...patch };
+    const p = { dark, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
@@ -652,6 +654,10 @@ export default function TaskManager() {
     if (Array.isArray(data.tasks)) { setTasks(data.tasks.map(normTask)); store.set(STORE_KEY, JSON.stringify(data.tasks.map(normTask))).catch(() => {}); }
     if (Array.isArray(data.lists)) { const nl = data.lists.map(normList); setLists(nl); store.set(LISTS_KEY, JSON.stringify(nl)).catch(() => {}); }
     if (Array.isArray(data.members)) setMembers(data.members);
+    if (data.settings && Array.isArray(data.settings.listCats)) {
+      setListCats(data.settings.listCats);
+      savePrefs({ listCats: data.settings.listCats });
+    }
     const now = new Date().toLocaleString();
     setLastSync(now); savePrefs({ lastSync: now });
     setDirty(false);
@@ -685,7 +691,7 @@ export default function TaskManager() {
       const res = await fetch(workerUrl + "/sync", {
         method: "POST",
         headers: authed(),
-        body: JSON.stringify({ tasks, lists }),
+        body: JSON.stringify({ tasks, lists, settings: { listCats } }),
       });
       if (res.status === 401) { handleAuthFail(); return; }
       const data = await res.json();
@@ -765,11 +771,11 @@ export default function TaskManager() {
     const c = newCatInput.trim();
     if (!c || listCats.includes(c)) { setNewCatInput(""); return; }
     const next = [...listCats, c];
-    setListCats(next); savePrefs({ listCats: next }); setNewCatInput("");
+    setListCats(next); savePrefs({ listCats: next }); setNewCatInput(""); setDirty(true);
   };
   const removeListCat = (c) => {
     const next = listCats.filter((x) => x !== c);
-    setListCats(next); savePrefs({ listCats: next });
+    setListCats(next); savePrefs({ listCats: next }); setDirty(true);
     // lists keep their label; it simply moves to "Other" until re-assigned
   };
   const setListType = (id, type) => {
@@ -1183,7 +1189,24 @@ export default function TaskManager() {
     </>
   );
 
-  const TaskCard = ({ t }) => (
+  const TaskCard = ({ t }) => {
+    const overdue = !t.done && t.dueDate && t.dueDate < today;
+    if (compact) {
+      return (
+        <div style={{ ...S.card(t.done, t.category ? dotColor(t.category, dark, colorMap) : T.line, overdue ? T.dangerSoft : null), minHeight: 0, padding: "5px 10px", marginBottom: 5, gap: 8, alignItems: "center" }}>
+          <button style={{ ...S.check(t.done), width: 19, height: 19, minWidth: 19, fontSize: 12, marginTop: 0 }} onClick={() => toggle(t.id)} aria-label={t.done ? "Mark open" : "Mark done"}>{t.done ? "✓" : ""}</button>
+          <div style={{ flex: 1, minWidth: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }} onClick={() => setEditing({ ...t })}>
+            <span style={{ fontSize: 14, fontWeight: 500, textDecoration: t.done ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>{t.title}</span>
+            {t.subCategory && <span style={{ fontSize: 11, color: T.mute, whiteSpace: "nowrap", flex: "0 0 auto" }}>{t.subCategory}</span>}
+            {t.dueDate && <span style={{ fontSize: 11.5, color: overdue ? T.danger : T.mute, whiteSpace: "nowrap", flex: "0 0 auto" }}>{fmtDate(t.dueDate)}{t.dueTime ? ` ${fmtTime(t.dueTime)}` : ""}</span>}
+            {t.recurrence && <span style={{ fontSize: 11, color: T.mute, flex: "0 0 auto" }} title={recLabel(t.recurrence)}>↻</span>}
+            {t.reminderDate && <span style={{ fontSize: 11, color: T.mute, flex: "0 0 auto" }} title="Reminder">🔔</span>}
+            {t.notes && <span style={{ fontSize: 11, color: T.accent, flex: "0 0 auto" }} title="Has notes">☰</span>}
+          </div>
+        </div>
+      );
+    }
+    return (
     <div style={S.card(t.done, t.category ? dotColor(t.category, dark, colorMap) : T.line, !t.done && t.dueDate && t.dueDate < today ? T.dangerSoft : null)}>
       <button style={S.check(t.done)} onClick={() => toggle(t.id)} aria-label={t.done ? "Mark open" : "Mark done"}>{t.done ? "✓" : ""}</button>
       <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => setEditing({ ...t })}>
@@ -1216,7 +1239,8 @@ export default function TaskManager() {
       <button style={S.iconBtn} onClick={() => setEditing({ ...t })} aria-label="Edit">✎</button>
       <button style={S.iconBtn} onClick={() => remove(t.id)} aria-label="Delete">✕</button>
     </div>
-  );
+    );
+  };
 
   const filtersActive = filterCat !== "All" || filterSub !== "All" || filterStatus !== "Open";
   const arrow = (k) => (sortKey === k ? (sortDir === 1 ? " ↑" : " ↓") : "");
@@ -1434,6 +1458,11 @@ export default function TaskManager() {
                           {hiddenCount} more scheduled ›
                         </button>
                       )}
+                      <button onClick={() => { const v = !compact; setCompact(v); savePrefs({ compact: v }); }}
+                        title={compact ? "Switch to comfortable rows" : "Switch to compact rows"}
+                        style={{ marginLeft: "auto", background: "none", border: `1px solid ${compact ? T.accent : T.line}`, borderRadius: 999, padding: "5px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: compact ? T.accent : T.mute }}>
+                        {compact ? "≡ Compact" : "≣ Comfortable"}
+                      </button>
                     </div>
                   )}
 
@@ -1447,8 +1476,9 @@ export default function TaskManager() {
                   {shownGroups.map((g) => {
                     const isCollapsed = !!collapsed[g.key];
                     const isExpanded = !!expandedGroups[g.key];
-                    const items = isCollapsed ? [] : isExpanded ? g.items : g.items.slice(0, GROUP_CAP);
-                    const moreCount = g.items.length - GROUP_CAP;
+                    const cap = compact ? GROUP_CAP * 2 : GROUP_CAP;
+                    const items = isCollapsed ? [] : isExpanded ? g.items : g.items.slice(0, cap);
+                    const moreCount = g.items.length - cap;
                     return (
                       <section key={g.key}>
                         <h2 style={{ ...S.gTitle(g.danger, g.bucket || g.accent), cursor: "pointer", userSelect: "none" }} onClick={() => toggleCollapse(g.key)}>

@@ -235,6 +235,12 @@ export default function TaskManager() {
   const [autoSync, setAutoSync] = useState(false);
   const autoTimer = useRef(null);
   const pulledOnce = useRef(false); // guard: don't push before we've pulled this session
+  // Ids deleted locally this session. A pre-push merge (see syncPush) unions
+  // local + server records by id so another device's additions never get
+  // silently wiped — these sets stop that same merge from resurrecting
+  // something you just deleted here, before the server has caught up.
+  const deletedTaskIds = useRef(new Set());
+  const deletedListIds = useRef(new Set());
   const [selectedIds, setSelectedIds] = useState({});
   const [openNotes, setOpenNotes] = useState({});
   const blank = { category: "", subCategory: "", dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "Inbox", notes: "" };
@@ -598,11 +604,15 @@ export default function TaskManager() {
   };
   const remove = (id) => {
     const prev = tasks;
+    deletedTaskIds.current.add(id);
     persist(tasks.filter((t) => t.id !== id));
-    flashUndo("Task deleted", () => persist(prev));
+    flashUndo("Task deleted", () => { deletedTaskIds.current.delete(id); persist(prev); });
   };
   const saveEdit = () => { persist(tasks.map((t) => (t.id === editing.id ? editing : t))); setEditing(null); };
-  const clearDone = () => persist(tasks.filter((t) => !t.done));
+  const clearDone = () => {
+    tasks.forEach((t) => { if (t.done) deletedTaskIds.current.add(t.id); });
+    persist(tasks.filter((t) => !t.done));
+  };
 
   const doImport = () => {
     const rows = parseCSV(importText.trim());
@@ -686,6 +696,24 @@ export default function TaskManager() {
     setDirty(false);
   };
 
+  // Unions server + local records by id for a push. Local wins whenever both
+  // have the id (it's either an edit you just made, or unchanged — either
+  // way your copy is authoritative). Anything id-only-on-the-server came
+  // from another device and gets kept. Anything in deletedIds (deleted here
+  // this session) is dropped even if the server still has it, so a fresh
+  // pull can't resurrect something you just removed.
+  const mergeById = (serverArr, localArr, deletedIds) => {
+    const serverMap = new Map(serverArr.map((x) => [x.id, x]));
+    const localMap = new Map(localArr.map((x) => [x.id, x]));
+    const ids = new Set([...serverMap.keys(), ...localMap.keys()]);
+    const merged = [];
+    ids.forEach((id) => {
+      if (deletedIds.has(id)) return;
+      merged.push(localMap.has(id) ? localMap.get(id) : serverMap.get(id));
+    });
+    return merged;
+  };
+
   const workerPull = async (silent) => {
     if (!session) return;
     if (!silent) setSyncing(true);
@@ -705,21 +733,40 @@ export default function TaskManager() {
 
   const syncPush = async () => {
     if (!session) return;
-    // Never overwrite the server with local state until we've read it once
-    // this session — this is what prevents an empty device from wiping
-    // everyone's lists.
-    if (!pulledOnce.current) { await workerPull(true); if (!pulledOnce.current) { flash("Can't reach the server — check the Server URL in Settings"); return; } }
     setSyncing(true);
     try {
+      // Always read the server's current state right before pushing — not
+      // just once per session. A device that's been open a while pushing
+      // its own stale snapshot is exactly what silently wiped out lists
+      // added from another device; merging on fresh server data every time
+      // fixes that.
+      let serverData;
+      try {
+        const pullRes = await fetch(workerUrl + "/sync", { headers: authed() });
+        if (pullRes.status === 401) { handleAuthFail(); return; }
+        serverData = await pullRes.json();
+        if (!pullRes.ok) throw new Error(serverData.error || "Sync failed");
+        pulledOnce.current = true;
+      } catch (e) {
+        flash("Can't reach the server — check the Server URL in Settings");
+        console.error(e);
+        return;
+      }
+
+      const mergedTasks = mergeById((serverData.tasks || []).map(normTask), tasks, deletedTaskIds.current);
+      const mergedLists = mergeById((serverData.lists || []).map(normList), lists, deletedListIds.current);
+
       const res = await fetch(workerUrl + "/sync", {
         method: "POST",
         headers: authed(),
-        body: JSON.stringify({ tasks, lists, settings: { listCats } }),
+        body: JSON.stringify({ tasks: mergedTasks, lists: mergedLists, settings: { listCats } }),
       });
       if (res.status === 401) { handleAuthFail(); return; }
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
       adopt(data); // reconcile with the server's view (picks up shared-list edits)
+      deletedTaskIds.current.clear();
+      deletedListIds.current.clear();
       flash(`Synced ${data.tasks.length} tasks`);
     } catch (e) {
       flash("Sync failed — check your connection");
@@ -764,6 +811,7 @@ export default function TaskManager() {
   const deleteAll = () => {
     if (!window.confirm("Delete ALL tasks? This cannot be undone.")) return;
     if (!window.confirm("Really sure? Consider Sync or CSV export first.")) return;
+    tasks.forEach((t) => deletedTaskIds.current.add(t.id));
     persist([]);
   };
 
@@ -861,6 +909,7 @@ export default function TaskManager() {
     const l = lists.find((x) => x.id === id);
     if (l && session && l.owner && l.owner !== session.name) { flash("Only the owner can delete this list"); return; }
     if (!window.confirm(`Delete list "${l ? l.name : ""}" and its items?`)) return;
+    deletedListIds.current.add(id);
     persistLists(lists.filter((x) => x.id !== id));
     if (activeListId === id) setActiveListId(null);
   };

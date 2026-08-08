@@ -3,10 +3,30 @@
   "short_name": "Tasks",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#F7F6F1",
-  "theme_color": "#136A55",
+  "background_color": "#22262D",
+  "theme_color": "#22262D",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add task",
+      "short_name": "Add",
+      "description": "Jump straight to adding a new task",
+      "url": "/?action=add"
+    },
+    {
+      "name": "Quick note",
+      "short_name": "Note",
+      "description": "Open the sticky note",
+      "url": "/?action=note"
+    },
+    {
+      "name": "Habits",
+      "short_name": "Habits",
+      "description": "Open the habit tracker",
+      "url": "/?action=habits"
+    }
   ]
 }

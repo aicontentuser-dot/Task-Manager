@@ -138,22 +138,34 @@ const parseCSV = (text) => {
 };
 
 /* ---------- themes ---------- */
+// Three appearance modes. "medium" (a comfortable dim slate, neither glaring
+// nor pitch-black) is the default; "light" is crisp; "dark" is deep.
+// Accent is a modern indigo throughout.
 const THEMES = {
   light: {
-    bg: "#FAF9F6", card: "#FFFFFF", ink: "#1C1F1A", mute: "#7C8078", line: "#E7E5DC",
-    accent: "#146B56", accentSoft: "#E6EFEA", danger: "#B23E22", dangerSoft: "#F5E4DD",
-    amber: "#A97418", amberSoft: "#F2E9D6",
-    tagBg: "#F1F0E9", overlay: "rgba(28,31,26,0.42)", shadow: "0 1px 2px rgba(28,31,26,0.05)",
-    footBg: "rgba(250,249,246,0.95)", rowAlt: "#FCFBF8",
+    bg: "#F7F7F8", card: "#FFFFFF", ink: "#191A1F", mute: "#7A7D87", line: "#E7E7EB",
+    accent: "#5B5BD6", accentSoft: "#ECECFB", danger: "#D8503F", dangerSoft: "#FBE9E6",
+    amber: "#B27C1C", amberSoft: "#F7EDD7",
+    tagBg: "#F0F0F3", overlay: "rgba(25,26,31,0.4)", shadow: "0 1px 2px rgba(25,26,31,0.05)",
+    footBg: "rgba(247,247,248,0.94)", rowAlt: "#FAFAFB",
+  },
+  medium: {
+    bg: "#22262D", card: "#2B303A", ink: "#E9EBEF", mute: "#9AA1AD", line: "#3B424E",
+    accent: "#8F91F4", accentSoft: "#343A5C", danger: "#EE7E66", dangerSoft: "#463029",
+    amber: "#E2B65E", amberSoft: "#3F3624",
+    tagBg: "#353C47", overlay: "rgba(0,0,0,0.55)", shadow: "0 1px 2px rgba(0,0,0,0.28)",
+    footBg: "rgba(34,38,45,0.95)", rowAlt: "#272C34",
   },
   dark: {
-    bg: "#141713", card: "#1E231E", ink: "#EBEAE2", mute: "#9CA298", line: "#31392F",
-    accent: "#45B491", accentSoft: "#20342B", danger: "#DD754F", dangerSoft: "#38251E",
-    amber: "#D6A24A", amberSoft: "#312918",
-    tagBg: "#282D26", overlay: "rgba(0,0,0,0.58)", shadow: "0 1px 2px rgba(0,0,0,0.3)",
-    footBg: "rgba(20,23,19,0.95)", rowAlt: "#191D18",
+    bg: "#101114", card: "#17191E", ink: "#E7E8EA", mute: "#8B8F99", line: "#2A2D35",
+    accent: "#7E80F1", accentSoft: "#272B4C", danger: "#E9715A", dangerSoft: "#3B2621",
+    amber: "#DAAD51", amberSoft: "#332B17",
+    tagBg: "#22252C", overlay: "rgba(0,0,0,0.62)", shadow: "0 1px 2px rgba(0,0,0,0.4)",
+    footBg: "rgba(16,17,20,0.95)", rowAlt: "#15171B",
   },
 };
+const THEME_MODES = ["light", "medium", "dark"];
+const THEME_ICON = { light: "☀", medium: "◐", dark: "☾" };
 
 const BUCKETS = ["Inbox", "Next week", "Someday"];
 // Display-only relabeling — the underlying bucket value stays "Next week"
@@ -216,7 +228,8 @@ const NAV_ICON = { Tasks: "☑", Lists: "☰", Dashboard: "▤", Settings: "⚙"
 export default function TaskManager() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dark, setDark] = useState(false);
+  const [themeMode, setThemeMode] = useState("medium");
+  const dark = themeMode !== "light"; // color helpers (dotColor etc.) treat medium as dark-ish
   const [view, setView] = useState("Tasks");
   const [taskMode, setTaskMode] = useState("List");
   const [focus, setFocus] = useState(true);
@@ -226,6 +239,7 @@ export default function TaskManager() {
   const [lists, setLists] = useState([]);
   const [activeListId, setActiveListId] = useState(null);
   const [addingList, setAddingList] = useState(false); // true when the '+' tab is selected
+  const [listCatFilter, setListCatFilter] = useState("All"); // groups the list tabs by category
   const [settingsTab, setSettingsTab] = useState("General");
   const [newListName, setNewListName] = useState("");
   const [newListType, setNewListType] = useState("checklist");
@@ -265,6 +279,7 @@ export default function TaskManager() {
   const [addOpen, setAddOpen] = useState(false);
   const [moreFields, setMoreFields] = useState(false);
   const [search, setSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [filterCat, setFilterCat] = useState("All");
   const [filterSub, setFilterSub] = useState("All");
   const [filterStatus, setFilterStatus] = useState("Open");
@@ -297,7 +312,7 @@ export default function TaskManager() {
   const [pickerFor, setPickerFor] = useState(null);
   const csvRef = useRef(null);
   const itemInputRef = useRef(null);
-  const T = dark ? THEMES.dark : THEMES.light;
+  const T = THEMES[themeMode] || THEMES.medium;
   const today = todayStr();
 
   /* load — with a timeout guard so a slow/unresponsive storage
@@ -315,7 +330,8 @@ export default function TaskManager() {
         const p = await withTimeout(store.get(PREFS_KEY), 2500);
         if (!cancelled && p?.value) {
           const prefs = JSON.parse(p.value);
-          setDark(prefs.dark === true);
+          if (THEME_MODES.includes(prefs.theme)) setThemeMode(prefs.theme);
+          else if (prefs.dark === true) setThemeMode("dark"); // migrate old boolean pref
           if (NAV.includes(prefs.view)) setView(prefs.view);
           else if (prefs.view === "List" || prefs.view === "Table") { setView("Tasks"); setTaskMode(prefs.view); }
           if (prefs.taskMode === "List" || prefs.taskMode === "Table") setTaskMode(prefs.taskMode);
@@ -400,10 +416,10 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { dark, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, catCollapsed, ...patch };
+    const p = { theme: themeMode, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, catCollapsed, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
-  const setTheme = (v) => { setDark(v); savePrefs({ dark: v }); };
+  const setTheme = (mode) => { setThemeMode(mode); savePrefs({ theme: mode }); };
   const switchView = (v) => { setView(v); savePrefs({ view: v }); };
   const switchTaskMode = (m) => { setTaskMode(m); savePrefs({ taskMode: m }); };
   const switchFocus = (f) => { setFocus(f); savePrefs({ focus: f }); };
@@ -832,7 +848,12 @@ export default function TaskManager() {
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
   useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); setReorderMode(false); }, [activeListId]);
-  useEffect(() => { if (view === "Lists" && !activeListId && !addingList && lists.length > 0) setActiveListId(lists[0].id); }, [view, activeListId, addingList, lists.length]);
+  const listMatchesCat = (l, f) => f === "All" ? true : f === "Other" ? !listCats.includes(l.category || "") : (l.category || "") === f;
+  useEffect(() => {
+    if (view !== "Lists" || activeListId || addingList || lists.length === 0) return;
+    const pool = lists.filter((l) => listMatchesCat(l, listCatFilter));
+    setActiveListId((pool[0] || lists[0]).id);
+  }, [view, activeListId, addingList, lists.length, listCatFilter]);
   useEffect(() => { if (view !== "Lists") setListsReorderMode(false); }, [view]);
 
   /* auto-sync: quietly push a few seconds after the last change */
@@ -1100,29 +1121,29 @@ export default function TaskManager() {
 
   /* ---------- styles ---------- */
   const S = {
-    app: { minHeight: "100vh", background: T.bg, color: T.ink, fontFamily: "'Inter', system-ui, sans-serif", paddingBottom: 96, transition: "background 0.25s, color 0.25s" },
+    app: { minHeight: "100vh", background: T.bg, color: T.ink, fontFamily: "'Manrope', system-ui, sans-serif", paddingBottom: 96, transition: "background 0.25s, color 0.25s" },
     wrap: { maxWidth: 720, margin: "0 auto", padding: "0 16px" },
     header: { padding: "22px 0 2px", display: "flex", alignItems: "flex-start", justifyContent: "space-between" },
-    h1: { fontFamily: "'Inter', sans-serif", fontWeight: 800, fontSize: 28, letterSpacing: "-0.02em", margin: 0 },
+    h1: { fontFamily: "'Space Grotesk', sans-serif", fontWeight: 800, fontSize: 28, letterSpacing: "-0.02em", margin: 0 },
     sub: { color: T.mute, fontSize: 13.5, margin: "3px 0 0" },
     round: { background: T.card, border: `1px solid ${T.line}`, color: T.ink, borderRadius: 999, width: 38, height: 38, fontSize: 17, cursor: "pointer" },
     tabs: { display: "flex", gap: 4, background: T.card, border: `1px solid ${T.line}`, borderRadius: 12, padding: 4, marginTop: 14 },
     tab: (a) => ({ flex: 1, border: "none", borderRadius: 9, padding: "8px 0", fontSize: 13.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", background: a ? T.accent : "transparent", color: a ? "#fff" : T.mute }),
-    addCard: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, padding: 10, marginTop: 14, boxShadow: T.shadow },
+    addCard: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: 10, marginTop: 14, boxShadow: T.shadow },
     addRow: { display: "flex", gap: 8 },
     addInput: { flex: 1, border: "none", outline: "none", fontSize: 16, padding: "6px 6px", background: "transparent", fontFamily: "inherit", color: T.ink },
-    addBtn: { background: T.accent, color: "#fff", border: "none", borderRadius: 10, padding: "8px 16px", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
+    addBtn: { background: T.accent, color: "#fff", border: "none", borderRadius: 999, padding: "8px 16px", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
     quickRow: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" },
     qChip: (a) => ({ border: `1px solid ${a ? T.accent : T.line}`, background: a ? T.accentSoft : "transparent", color: a ? T.accent : T.mute, borderRadius: 999, padding: "4px 11px", fontSize: 12.5, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }),
     inlineGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${T.line}` },
     label: { fontSize: 10.5, fontWeight: 600, color: T.mute, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 3 },
     input: { width: "100%", boxSizing: "border-box", border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 9px", fontSize: 14, fontFamily: "inherit", background: T.bg, color: T.ink, outline: "none", colorScheme: dark ? "dark" : "light" },
     toolRow: { display: "flex", gap: 8, marginTop: 12, alignItems: "center" },
-    search: { flex: 1, border: `1px solid ${T.line}`, borderRadius: 10, padding: "9px 12px", fontSize: 14, background: T.card, color: T.ink, outline: "none", fontFamily: "inherit" },
+    search: { flex: 1, border: `1px solid ${T.line}`, borderRadius: 12, padding: "9px 12px", fontSize: 14, background: T.card, color: T.ink, outline: "none", fontFamily: "inherit" },
     chipRow: { display: "flex", gap: 8, overflowX: "auto", padding: 0, scrollbarWidth: "none" },
     chip: (a) => ({ flexShrink: 0, border: `1px solid ${a ? T.accent : T.line}`, background: a ? T.accent : T.card, color: a ? "#fff" : T.ink, borderRadius: 999, padding: "6px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }),
     panel: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, marginTop: 10, padding: 12, display: "grid", gap: 10 },
-    gTitle: (danger, bucket) => ({ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 15, color: danger ? T.danger : bucket ? T.accent : T.ink, margin: "22px 0 8px", display: "flex", alignItems: "center", gap: 8 }),
+    gTitle: (danger, bucket) => ({ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 15, color: danger ? T.danger : bucket ? T.accent : T.ink, margin: "22px 0 8px", display: "flex", alignItems: "center", gap: 8 }),
     count: { fontSize: 11, background: T.tagBg, color: T.ink, borderRadius: 999, padding: "1px 8px", fontWeight: 600 },
     card: (done, edge, tint) => ({ background: tint || T.card, borderTop: `1px solid ${T.line}`, borderRight: `1px solid ${T.line}`, borderBottom: `1px solid ${T.line}`, borderLeft: `3px solid ${edge || T.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, boxShadow: T.shadow, transition: "opacity 0.2s", minHeight: 54, boxSizing: "border-box" }),
     // Quieter row style for TaskCard specifically — whitespace + a thin
@@ -1140,15 +1161,15 @@ export default function TaskManager() {
     /* table */
     tableWrap: { overflowX: "auto", marginTop: 16, border: `1px solid ${T.line}`, borderRadius: 12, background: T.card },
     table: { borderCollapse: "collapse", width: "100%", minWidth: 620, fontSize: 13.5 },
-    th: { textAlign: "left", padding: "10px 12px", fontFamily: "'Inter', sans-serif", fontSize: 11.5, letterSpacing: "0.06em", textTransform: "uppercase", color: T.mute, borderBottom: `1px solid ${T.line}`, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none" },
+    th: { textAlign: "left", padding: "10px 12px", fontFamily: "'Manrope', sans-serif", fontSize: 11.5, letterSpacing: "0.06em", textTransform: "uppercase", color: T.mute, borderBottom: `1px solid ${T.line}`, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none" },
     td: { padding: "9px 12px", borderBottom: `1px solid ${T.line}`, verticalAlign: "top" },
     /* dashboard */
     statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 },
-    statCard: (accentColor) => ({ background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, padding: "14px 16px", boxShadow: T.shadow, borderTop: `3px solid ${accentColor}` }),
-    statNum: { fontFamily: "'Inter', sans-serif", fontWeight: 800, fontSize: 30, lineHeight: 1.1 },
+    statCard: (accentColor) => ({ background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: "14px 16px", boxShadow: T.shadow, borderTop: `3px solid ${accentColor}` }),
+    statNum: { fontFamily: "'Space Grotesk', sans-serif", fontWeight: 800, fontSize: 30, lineHeight: 1.1 },
     statLbl: { fontSize: 12.5, color: T.mute, fontWeight: 500, marginTop: 2 },
-    dashCard: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, padding: 16, marginTop: 12, boxShadow: T.shadow },
-    dashTitle: { fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 15.5, color: T.ink, margin: "0 0 12px" },
+    dashCard: { background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: 16, marginTop: 12, boxShadow: T.shadow },
+    dashTitle: { fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 15.5, color: T.ink, margin: "0 0 12px" },
     barRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
     barLbl: { fontSize: 13, width: 110, minWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
     barTrack: { flex: 1, height: 10, background: T.tagBg, borderRadius: 6, overflow: "hidden" },
@@ -1160,7 +1181,7 @@ export default function TaskManager() {
     colLbl: { fontSize: 10.5, color: T.mute },
     footer: { position: "fixed", bottom: 0, left: 0, right: 0, background: T.footBg, borderTop: `1px solid ${T.line}`, padding: "10px 16px", display: "flex", gap: 10, justifyContent: "center", backdropFilter: "blur(6px)" },
     fab: { position: "fixed", bottom: 74, right: "max(18px, calc(50% - 360px + 18px))", width: 56, height: 56, borderRadius: 28, background: T.accent, color: "#fff", border: "none", fontSize: 30, lineHeight: "56px", textAlign: "center", cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.28)", zIndex: 15, padding: 0, fontFamily: "inherit", transition: "transform 0.15s" },
-    footBtn: { border: `1px solid ${T.line}`, background: T.card, borderRadius: 10, padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: T.ink },
+    footBtn: { border: `1px solid ${T.line}`, background: T.card, borderRadius: 999, padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: T.ink },
     modalBg: { position: "fixed", inset: 0, background: T.overlay, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 20 },
     modal: { background: T.card, borderRadius: 16, padding: 18, width: "100%", maxWidth: 560, maxHeight: "85vh", overflowY: "auto", color: T.ink },
     textarea: { width: "100%", boxSizing: "border-box", height: 180, border: `1px solid ${T.line}`, borderRadius: 10, padding: 10, fontSize: 12.5, fontFamily: "ui-monospace, monospace", background: T.bg, color: T.ink },
@@ -1172,7 +1193,7 @@ export default function TaskManager() {
 
   if (!session) return (
     <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
       <div style={{ width: "100%", maxWidth: 380 }}>
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <div style={{ fontSize: 40 }}>☑</div>
@@ -1359,7 +1380,7 @@ export default function TaskManager() {
 
   return (
     <div style={S.app} className="tm-app">
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
       {/* Mobile layout (below) is untouched — this only kicks in on wider
           screens, replacing the centered mobile-width column with a
           persistent sidebar + full-width content, per the redesign review. */}
@@ -1373,7 +1394,7 @@ export default function TaskManager() {
         }
       `}</style>
       <nav className="tm-sidebar" style={{ display: "none", flexDirection: "column", width: 232, minWidth: 232, position: "sticky", top: 0, height: "100vh", padding: "26px 14px", borderRight: `1px solid ${T.line}`, gap: 2, boxSizing: "border-box" }}>
-        <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 800, fontSize: 17, padding: "0 10px 22px", color: T.ink }}>Task Manager</div>
+        <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 800, fontSize: 17, padding: "0 10px 22px", color: T.ink }}>Task Manager</div>
         {NAV.map((v) => (
           <button key={v} onClick={() => switchView(v)}
             style={{ display: "flex", alignItems: "center", gap: 10, background: view === v ? T.tagBg : "none", border: "none", borderRadius: 8, padding: "9px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 14.5, fontWeight: view === v ? 700 : 500, color: view === v ? T.accent : T.ink, textAlign: "left" }}>
@@ -1396,11 +1417,11 @@ export default function TaskManager() {
               {syncing ? "⧗" : "⇅"}
               {dirty && !syncing && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: 4, background: T.accent }} />}
             </button>
-            <button style={S.round} onClick={() => setTheme(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
+            <button style={S.round} onClick={() => setTheme(THEME_MODES[(THEME_MODES.indexOf(themeMode) + 1) % 3])} aria-label="Switch appearance" title={`Appearance: ${themeMode} — tap to change`}>{THEME_ICON[themeMode]}</button>
           </div>
         </header>
         {view === "Tasks" && focus && (
-          <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 14, color: T.accent, marginTop: 10 }}>
+          <div style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 14, color: T.accent, marginTop: 10 }}>
             {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
           </div>
         )}
@@ -1424,7 +1445,7 @@ export default function TaskManager() {
           <div style={S.modalBg} onClick={() => { setAddOpen(false); setAddFocus(false); }}>
             <div style={{ ...S.modal, maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
               <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
-                <h3 style={{ margin: 0, fontFamily: "'Inter', sans-serif", fontSize: 18 }}>New task</h3>
+                <h3 style={{ margin: 0, fontFamily: "'Manrope', sans-serif", fontSize: 18 }}>New task</h3>
                 <button style={{ ...S.iconBtn, marginLeft: "auto", fontSize: 18 }} onClick={() => setAddOpen(false)} aria-label="Close">✕</button>
               </div>
               <div style={{ ...S.addCard, marginTop: 0, border: "none", boxShadow: "none", padding: 0 }}>
@@ -1526,18 +1547,28 @@ export default function TaskManager() {
         {view === "Tasks" && (
           <>
             <div style={S.toolRow}>
-              <input style={S.search} placeholder="Search tasks…" value={search} onChange={(e) => setSearch(e.target.value)} />
-              <div style={{ display: "flex", border: `1px solid ${T.line}`, borderRadius: 10, overflow: "hidden" }}>
+              <div style={{ display: "flex", border: `1px solid ${T.line}`, borderRadius: 999, overflow: "hidden" }}>
                 {["List", "Table"].map((m) => (
                   <button key={m} onClick={() => switchTaskMode(m)}
-                    style={{ border: "none", padding: "9px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                    style={{ border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
                       background: taskMode === m ? T.accent : T.card, color: taskMode === m ? "#fff" : T.mute }}>{m}</button>
                 ))}
               </div>
               <button style={{ ...S.footBtn, borderColor: filtersActive ? T.accent : T.line, color: filtersActive ? T.accent : T.ink }} onClick={() => setShowFilters(!showFilters)}>
                 Filter{filtersActive ? " •" : ""}
               </button>
+              <button
+                style={{ ...S.round, marginLeft: "auto", width: 36, height: 36, fontSize: 15, borderColor: (searchOpen || search) ? T.accent : T.line, color: (searchOpen || search) ? T.accent : T.mute }}
+                onClick={() => { if (searchOpen) { setSearchOpen(false); setSearch(""); } else setSearchOpen(true); }}
+                aria-label={searchOpen ? "Close search" : "Search tasks"} title={searchOpen ? "Close search" : "Search tasks"}>
+                {searchOpen ? "✕" : "⌕"}
+              </button>
             </div>
+            {searchOpen && (
+              <input style={{ ...S.search, width: "100%", boxSizing: "border-box", marginTop: 8 }} placeholder="Search tasks…" value={search} autoFocus
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") { setSearchOpen(false); setSearch(""); } }} />
+            )}
             {showFilters && (
               <div style={S.panel}>
                 <div>
@@ -1702,22 +1733,44 @@ export default function TaskManager() {
                 ))}
               </div>
             ) : (
-              <div style={{ display: "flex", alignItems: "center", marginTop: 4 }}>
-                <div style={{ display: "flex", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                  {lists.map((l) => (
-                    <button key={l.id} onClick={() => { setActiveListId(l.id); setAddingList(false); }}
-                      style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, border: "none", borderBottom: `2px solid ${!addingList && activeListId === l.id ? T.accent : "transparent"}`, background: "none", padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: !addingList && activeListId === l.id ? 700 : 500, color: !addingList && activeListId === l.id ? T.ink : T.mute, whiteSpace: "nowrap" }}>
-                      <span style={{ width: 7, height: 7, minWidth: 7, borderRadius: 4, background: dotColor(l.name, dark, colorMap) }} />
-                      {l.name}
-                    </button>
-                  ))}
-                  <button onClick={() => { setAddingList(true); setActiveListId(null); }}
-                    style={{ flexShrink: 0, border: "none", borderBottom: `2px solid ${addingList ? T.accent : "transparent"}`, background: "none", padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 16, fontWeight: 700, color: addingList ? T.accent : T.mute }} aria-label="New list">+</button>
+              <>
+                {listCats.length > 0 && lists.length > 0 && (() => {
+                  const hasOther = lists.some((l) => !listCats.includes(l.category || ""));
+                  const chips = ["All", ...listCats.filter((c) => lists.some((l) => (l.category || "") === c)), ...(hasOther ? ["Other"] : [])];
+                  if (chips.length <= 2) return null; // grouping adds nothing with 0–1 real groups
+                  return (
+                    <div style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", marginTop: 4, paddingBottom: 8 }}>
+                      {chips.map((c) => (
+                        <button key={c} style={{ ...S.qChip(listCatFilter === c), flexShrink: 0 }}
+                          onClick={() => {
+                            setListCatFilter(c);
+                            setAddingList(false);
+                            const pool = lists.filter((l) => listMatchesCat(l, c));
+                            if (!pool.some((l) => l.id === activeListId)) setActiveListId(pool.length ? pool[0].id : null);
+                          }}>
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <div style={{ display: "flex", alignItems: "center", marginTop: 2 }}>
+                  <div style={{ display: "flex", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                    {lists.filter((l) => listMatchesCat(l, listCatFilter)).map((l) => (
+                      <button key={l.id} onClick={() => { setActiveListId(l.id); setAddingList(false); }}
+                        style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, border: "none", borderBottom: `2px solid ${!addingList && activeListId === l.id ? T.accent : "transparent"}`, background: "none", padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: !addingList && activeListId === l.id ? 700 : 500, color: !addingList && activeListId === l.id ? T.ink : T.mute, whiteSpace: "nowrap" }}>
+                        <span style={{ width: 7, height: 7, minWidth: 7, borderRadius: 4, background: dotColor(l.name, dark, colorMap) }} />
+                        {l.name}
+                      </button>
+                    ))}
+                    <button onClick={() => { setAddingList(true); setActiveListId(null); }}
+                      style={{ flexShrink: 0, border: "none", borderBottom: `2px solid ${addingList ? T.accent : "transparent"}`, background: "none", padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 16, fontWeight: 700, color: addingList ? T.accent : T.mute }} aria-label="New list">+</button>
+                  </div>
+                  {lists.length > 1 && (
+                    <button onClick={() => setListsReorderMode(true)} style={{ flexShrink: 0, border: "none", background: "none", padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, color: T.mute, marginLeft: "auto" }}>Reorder</button>
+                  )}
                 </div>
-                {lists.length > 1 && (
-                  <button onClick={() => setListsReorderMode(true)} style={{ flexShrink: 0, border: "none", background: "none", padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 12, color: T.mute, marginLeft: "auto" }}>Reorder</button>
-                )}
-              </div>
+              </>
             )}
             <div style={{ borderBottom: `1px solid ${T.line}`, marginBottom: 14 }} />
 
@@ -1761,7 +1814,7 @@ export default function TaskManager() {
         {view === "Lists" && activeList && !listsReorderMode && (
           <>
             <div style={{ textAlign: "center", marginTop: 4 }}>
-              <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 800, fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <div style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                 <span style={{ width: 10, height: 10, borderRadius: 5, background: dotColor(activeList.name, dark, colorMap), display: "inline-block" }} />{activeList.name}
               </div>
               <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
@@ -2047,8 +2100,14 @@ export default function TaskManager() {
                 <div style={S.dashCard}>
                   <h3 style={S.dashTitle}>Appearance</h3>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 14.5 }}>Dark mode</span>
-                    <button style={S.footBtn} onClick={() => setTheme(!dark)}>{dark ? "On · switch to light" : "Off · switch to dark"}</button>
+                    <span style={{ fontSize: 14.5 }}>Appearance</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {THEME_MODES.map((m) => (
+                        <button key={m} style={S.qChip(themeMode === m)} onClick={() => setTheme(m)}>
+                          {THEME_ICON[m]} {m[0].toUpperCase() + m.slice(1)}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <div style={S.dashCard}>
@@ -2220,7 +2279,7 @@ export default function TaskManager() {
       {modal === "export" && (
         <div style={S.modalBg} onClick={() => setModal(null)}>
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Inter', sans-serif" }}>Export to Google Sheets</h3>
+            <h3 style={{ marginTop: 0, fontFamily: "'Manrope', sans-serif" }}>Export to Google Sheets</h3>
             <p style={{ fontSize: 14, color: T.mute }}>Download the CSV and import it in Sheets (File → Import), or copy the text and paste into a sheet, then Data → Split text to columns.</p>
             <textarea ref={csvRef} style={S.textarea} readOnly value={toCSV(tasks)} />
             <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
@@ -2237,7 +2296,7 @@ export default function TaskManager() {
       {modal === "import" && (
         <div style={S.modalBg} onClick={() => setModal(null)}>
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Inter', sans-serif" }}>Import CSV</h3>
+            <h3 style={{ marginTop: 0, fontFamily: "'Manrope', sans-serif" }}>Import CSV</h3>
             <p style={{ fontSize: 14, color: T.mute }}>Header row: Task, Category, Sub Category, Due Date, Due Time, Reminder Date, Reminder Time, Recurrence, Bucket, Status, Created, Completed. Dates YYYY-MM-DD, times HH:MM.</p>
             <textarea style={S.textarea} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste CSV here…" />
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -2252,7 +2311,7 @@ export default function TaskManager() {
       {editing && (
         <div style={S.modalBg} onClick={() => setEditing(null)}>
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0, fontFamily: "'Inter', sans-serif" }}>Edit task</h3>
+            <h3 style={{ marginTop: 0, fontFamily: "'Manrope', sans-serif" }}>Edit task</h3>
             <div style={{ marginBottom: 10 }}>
               <label style={S.label}>Task</label>
               <input style={S.input} value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
@@ -2281,7 +2340,7 @@ export default function TaskManager() {
         return (
           <div style={S.modalBg} onClick={() => setShareFor(null)}>
             <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-              <h3 style={{ marginTop: 0, fontFamily: "'Inter', sans-serif" }}>Share "{l.name}"</h3>
+              <h3 style={{ marginTop: 0, fontFamily: "'Manrope', sans-serif" }}>Share "{l.name}"</h3>
               <p style={{ fontSize: 14, color: T.mute }}>Anyone you pick can view and edit this list's items. Only you can rename, re-share, or delete it. Changes sync on the next push.</p>
               {others.length === 0 && <div style={S.empty}>No other users yet. Add them in the Worker's USERS setting.</div>}
               <div style={{ display: "grid", gap: 8, marginTop: 6 }}>

@@ -219,11 +219,11 @@ const recLabel = (r) => {
   }
   return REC_LABEL[r] || r;
 };
-const NAV = ["Tasks", "Lists", "Dashboard", "Settings"];
+const NAV = ["Tasks", "Lists", "Habits", "Settings"];
 const SETTINGS_TABS = ["General", "Categories", "Lists", "Account & Sync"];
 const FOCUS_KEYS = ["Overdue", "Today", "Tomorrow", "Inbox"];
 const GROUP_CAP = 6;
-const NAV_ICON = { Tasks: "☑", Lists: "☰", Dashboard: "▤", Settings: "⚙" };
+const NAV_ICON = { Tasks: "☑", Lists: "☰", Habits: "◎", Settings: "⚙" };
 
 export default function TaskManager() {
   const [tasks, setTasks] = useState([]);
@@ -241,6 +241,14 @@ export default function TaskManager() {
   const [addingList, setAddingList] = useState(false); // true when the '+' tab is selected
   const [listCatFilter, setListCatFilter] = useState("All"); // groups the list tabs by category
   const [settingsTab, setSettingsTab] = useState("General");
+  // Habits + sticky note live in the synced Settings blob (like listCats),
+  // so they follow you across devices with no Worker changes.
+  const [habits, setHabits] = useState([]); // [{id, name}]
+  const [habitLog, setHabitLog] = useState({}); // { "habitId|YYYY-MM-DD": {d:1, n:"note"} }
+  const [openHabitHistory, setOpenHabitHistory] = useState({});
+  const [newHabitName, setNewHabitName] = useState("");
+  const [stickyNote, setStickyNote] = useState("");
+  const [stickyOpen, setStickyOpen] = useState(false);
   const [newListName, setNewListName] = useState("");
   const [newListType, setNewListType] = useState("checklist");
   const [newListFields, setNewListFields] = useState([]);
@@ -344,6 +352,9 @@ export default function TaskManager() {
           if (prefs.workerUrl) setWorkerUrl(prefs.workerUrl);
           if (prefs.hideChecked === true) setHideChecked(true);
           if (prefs.catCollapsed && typeof prefs.catCollapsed === "object") setCatCollapsed(prefs.catCollapsed);
+          if (Array.isArray(prefs.habits)) setHabits(prefs.habits);
+          if (prefs.habitLog && typeof prefs.habitLog === "object") setHabitLog(prefs.habitLog);
+          if (typeof prefs.stickyNote === "string") setStickyNote(prefs.stickyNote);
           if (prefs.autoSync === true) setAutoSync(true);
           if (prefs.lastSync) setLastSync(prefs.lastSync);
         }
@@ -416,7 +427,7 @@ export default function TaskManager() {
     try { await store.set(STORE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
   };
   const savePrefs = async (patch) => {
-    const p = { theme: themeMode, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, catCollapsed, ...patch };
+    const p = { theme: themeMode, view, taskMode, focus, collapsed, compact, scriptUrl, lastSync, catColors, autoSync, listCats, workerUrl, hideChecked, catCollapsed, habits, habitLog, stickyNote, ...patch };
     try { await store.set(PREFS_KEY, JSON.stringify(p)); } catch (e) { console.error(e); }
   };
   const setTheme = (mode) => { setThemeMode(mode); savePrefs({ theme: mode }); };
@@ -426,27 +437,6 @@ export default function TaskManager() {
   const toggleCollapse = (key) => {
     const next = { ...collapsed, [key]: !collapsed[key] };
     setCollapsed(next); savePrefs({ collapsed: next });
-  };
-  // Jumps from a Dashboard stat/bar to the Tasks view, pre-filtered and
-  // scrolled to the relevant group. groupKeys (if given) are expanded and
-  // taken out of Focus mode if Focus would otherwise hide them.
-  const goToTasksGroup = ({ cat = "All", sub = "All", status = "Open", groupKeys } = {}) => {
-    setFilterCat(cat); setFilterSub(sub); setFilterStatus(status);
-    switchTaskMode("List");
-    if (groupKeys && groupKeys.some((k) => !FOCUS_KEYS.includes(k))) switchFocus(false);
-    if (groupKeys && groupKeys.length) {
-      const next = { ...collapsed };
-      groupKeys.forEach((k) => { next[k] = false; });
-      setCollapsed(next); savePrefs({ collapsed: next });
-    }
-    switchView("Tasks");
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        const el = groupKeys && groupKeys.map((k) => document.getElementById("grp-" + k)).find(Boolean);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-        else window.scrollTo({ top: 0, behavior: "smooth" });
-      }, 80);
-    });
   };
   const persistLists = async (next) => {
     setLists(next); setDirty(true);
@@ -535,35 +525,6 @@ export default function TaskManager() {
     if (sortKey === k) setSortDir(-sortDir);
     else { setSortKey(k); setSortDir(1); }
   };
-
-  /* dashboard stats (computed over ALL tasks, ignoring filters) */
-  const stats = useMemo(() => {
-    const allOpen = tasks.filter((t) => !t.done);
-    const overdue = allOpen.filter((t) => t.dueDate && t.dueDate < today).length;
-    const dueToday = allOpen.filter((t) => t.dueDate === today).length;
-    const week = allOpen.filter((t) => t.dueDate && t.dueDate >= today && t.dueDate <= weekEnd).length;
-    const doneWeek = tasks.filter((t) => t.done && t.completedAt && t.completedAt >= addDays(today, -6)).length;
-    // by category (open)
-    const byCat = {};
-    allOpen.forEach((t) => { const c = t.category || "Uncategorized"; byCat[c] = (byCat[c] || 0) + 1; });
-    const catRows = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 8);
-    // next 7 days load
-    const next7 = Array.from({ length: 7 }, (_, i) => {
-      const d = addDays(today, i);
-      return { date: d, count: allOpen.filter((t) => t.dueDate === d).length };
-    });
-    // completed last 7 days
-    const last7 = Array.from({ length: 7 }, (_, i) => {
-      const d = addDays(today, i - 6);
-      return { date: d, count: tasks.filter((t) => t.done && t.completedAt === d).length };
-    });
-    const buckets = {
-      "Next week": allOpen.filter((t) => !t.dueDate && t.bucket === "Next week").length,
-      "Someday": allOpen.filter((t) => !t.dueDate && t.bucket === "Someday").length,
-      "Inbox": allOpen.filter((t) => !t.dueDate && (!t.bucket || t.bucket === "Inbox")).length,
-    };
-    return { open: allOpen.length, overdue, dueToday, week, doneWeek, catRows, next7, last7, buckets };
-  }, [tasks, today, weekEnd]);
 
   /* actions */
   const parsed = useMemo(() => parseQuickAdd(newTitle, today, ignoredParses), [newTitle, today, ignoredParses]);
@@ -717,9 +678,13 @@ export default function TaskManager() {
     if (Array.isArray(data.tasks)) { setTasks(data.tasks.map(normTask)); store.set(STORE_KEY, JSON.stringify(data.tasks.map(normTask))).catch(() => {}); }
     if (Array.isArray(data.lists)) { const nl = data.lists.map(normList); setLists(nl); store.set(LISTS_KEY, JSON.stringify(nl)).catch(() => {}); }
     if (Array.isArray(data.members)) setMembers(data.members);
-    if (data.settings && Array.isArray(data.settings.listCats)) {
-      setListCats(data.settings.listCats);
-      savePrefs({ listCats: data.settings.listCats });
+    if (data.settings && typeof data.settings === "object") {
+      const s = data.settings, patch = {};
+      if (Array.isArray(s.listCats)) { setListCats(s.listCats); patch.listCats = s.listCats; }
+      if (Array.isArray(s.habits)) { setHabits(s.habits); patch.habits = s.habits; }
+      if (s.habitLog && typeof s.habitLog === "object") { setHabitLog(s.habitLog); patch.habitLog = s.habitLog; }
+      if (typeof s.stickyNote === "string") { setStickyNote(s.stickyNote); patch.stickyNote = s.stickyNote; }
+      if (Object.keys(patch).length) savePrefs(patch);
     }
     const now = new Date().toLocaleString();
     setLastSync(now); savePrefs({ lastSync: now });
@@ -789,7 +754,7 @@ export default function TaskManager() {
       const res = await fetch(workerUrl + "/sync", {
         method: "POST",
         headers: authed(),
-        body: JSON.stringify({ tasks: mergedTasks, lists: mergedLists, settings: { listCats } }),
+        body: JSON.stringify({ tasks: mergedTasks, lists: mergedLists, settings: { listCats, habits, habitLog, stickyNote } }),
       });
       if (res.status === 401) { handleAuthFail(); return; }
       const data = await res.json();
@@ -885,6 +850,60 @@ export default function TaskManager() {
     const next = listCats.filter((x) => x !== c);
     setListCats(next); savePrefs({ listCats: next }); setDirty(true);
     // lists keep their label; it simply moves to "Other" until re-assigned
+  };
+
+  /* ---------- habits (synced via the Settings blob, like listCats) ---------- */
+  const hKey = (id, date) => `${id}|${date}`;
+  const persistHabits = (nextHabits, nextLog) => {
+    if (nextHabits) { setHabits(nextHabits); }
+    if (nextLog) { setHabitLog(nextLog); }
+    savePrefs({ ...(nextHabits ? { habits: nextHabits } : {}), ...(nextLog ? { habitLog: nextLog } : {}) });
+    setDirty(true);
+  };
+  const addHabit = () => {
+    const name = newHabitName.trim();
+    if (!name) return;
+    if (habits.some((h) => h.name.toLowerCase() === name.toLowerCase())) { flash("That habit already exists"); setNewHabitName(""); return; }
+    persistHabits([...habits, { id: uid(), name }], null);
+    setNewHabitName("");
+  };
+  const renameHabit = (id) => {
+    const h = habits.find((x) => x.id === id);
+    const name = window.prompt("Rename habit:", h ? h.name : "");
+    if (!name || !name.trim()) return;
+    persistHabits(habits.map((x) => (x.id === id ? { ...x, name: name.trim() } : x)), null);
+  };
+  const deleteHabit = (id) => {
+    const h = habits.find((x) => x.id === id);
+    if (!window.confirm(`Delete habit "${h ? h.name : ""}" and its history?`)) return;
+    const nextLog = Object.fromEntries(Object.entries(habitLog).filter(([k]) => !k.startsWith(id + "|")));
+    persistHabits(habits.filter((x) => x.id !== id), nextLog);
+  };
+  const toggleHabitDay = (id, date) => {
+    const k = hKey(id, date);
+    const cur = habitLog[k];
+    const next = { ...habitLog };
+    if (cur && cur.d) { if (cur.n) next[k] = { ...cur, d: 0 }; else delete next[k]; }
+    else next[k] = { ...(cur || {}), d: 1 };
+    persistHabits(null, next);
+  };
+  const editHabitNote = (id, date) => {
+    const k = hKey(id, date);
+    const cur = habitLog[k] || {};
+    const n = window.prompt("Log details (e.g. Bench 3×8 @40kg, 20 min run):", cur.n || "");
+    if (n === null) return;
+    const next = { ...habitLog };
+    if (!n.trim() && !cur.d) delete next[k];
+    else next[k] = { d: cur.d || 1, n: n.trim() }; // adding a log marks the day done
+    persistHabits(null, next);
+  };
+  const lastNDates = (n) => Array.from({ length: n }, (_, i) => addDays(today, -(n - 1 - i)));
+  const habitStreak = (id) => {
+    let s = 0, d = today;
+    // today counts if done; otherwise the streak may still be alive from yesterday
+    if (!(habitLog[hKey(id, d)] || {}).d) d = addDays(d, -1);
+    while ((habitLog[hKey(id, d)] || {}).d) { s++; d = addDays(d, -1); }
+    return s;
   };
   const setListType = (id, type) => {
     persistLists(lists.map((l) => (l.id === id ? { ...l, type, fields: type === "custom" && !(l.fields || []).length ? listExtras(l) : l.fields || [] } : l)));
@@ -1182,6 +1201,9 @@ export default function TaskManager() {
     footer: { position: "fixed", bottom: 0, left: 0, right: 0, background: T.footBg, borderTop: `1px solid ${T.line}`, padding: "10px 16px", display: "flex", gap: 10, justifyContent: "center", backdropFilter: "blur(6px)" },
     fab: { position: "fixed", bottom: 74, right: "max(18px, calc(50% - 360px + 18px))", width: 56, height: 56, borderRadius: 28, background: T.accent, color: "#fff", border: "none", fontSize: 30, lineHeight: "56px", textAlign: "center", cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.28)", zIndex: 15, padding: 0, fontFamily: "inherit", transition: "transform 0.15s" },
     footBtn: { border: `1px solid ${T.line}`, background: T.card, borderRadius: 999, padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: T.ink },
+    // Ghost buttons: quiet text-only controls for secondary actions, so the
+    // content (tasks, list items) stays the visual hero.
+    ghost: (active) => ({ background: "none", border: "none", padding: "4px 8px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: active ? T.accent : T.mute, borderRadius: 6 }),
     modalBg: { position: "fixed", inset: 0, background: T.overlay, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 20 },
     modal: { background: T.card, borderRadius: 16, padding: 18, width: "100%", maxWidth: 560, maxHeight: "85vh", overflowY: "auto", color: T.ink },
     textarea: { width: "100%", boxSizing: "border-box", height: 180, border: `1px solid ${T.line}`, borderRadius: 10, padding: 10, fontSize: 12.5, fontFamily: "ui-monospace, monospace", background: T.bg, color: T.ink },
@@ -1374,9 +1396,6 @@ export default function TaskManager() {
 
   const filtersActive = filterCat !== "All" || filterSub !== "All" || filterStatus !== "Open";
   const arrow = (k) => (sortKey === k ? (sortDir === 1 ? " ↑" : " ↓") : "");
-  const maxCat = Math.max(1, ...stats.catRows.map(([, n]) => n));
-  const maxNext7 = Math.max(1, ...stats.next7.map((d) => d.count));
-  const maxLast7 = Math.max(1, ...stats.last7.map((d) => d.count));
 
   return (
     <div style={S.app} className="tm-app">
@@ -1413,6 +1432,11 @@ export default function TaskManager() {
             {view === "Lists" && <p style={S.sub}>{lists.length} list{lists.length === 1 ? "" : "s"}</p>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...S.round, position: "relative", borderColor: (stickyOpen || stickyNote.trim()) ? T.amber : T.line, color: (stickyOpen || stickyNote.trim()) ? T.amber : T.ink }}
+              onClick={() => setStickyOpen(!stickyOpen)} aria-label="Quick note" title="Quick note — jot anything">
+              ✎
+              {!!stickyNote.trim() && !stickyOpen && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: 4, background: T.amber }} />}
+            </button>
             <button style={{ ...S.round, position: "relative", borderColor: dirty ? T.accent : T.line }} onClick={syncPush} disabled={syncing} aria-label="Sync to Sheets" title={dirty ? "Unsynced changes — tap to sync" : "Sync to Sheets"}>
               {syncing ? "⧗" : "⇅"}
               {dirty && !syncing && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: 4, background: T.accent }} />}
@@ -1420,6 +1444,16 @@ export default function TaskManager() {
             <button style={S.round} onClick={() => setTheme(THEME_MODES[(THEME_MODES.indexOf(themeMode) + 1) % 3])} aria-label="Switch appearance" title={`Appearance: ${themeMode} — tap to change`}>{THEME_ICON[themeMode]}</button>
           </div>
         </header>
+        {stickyOpen && (
+          <div style={{ background: T.amberSoft, border: `1px solid ${T.amber}33`, borderRadius: 14, padding: "10px 12px", marginTop: 12 }}>
+            <textarea
+              style={{ width: "100%", minHeight: 72, boxSizing: "border-box", background: "transparent", border: "none", outline: "none", resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.55, color: T.ink }}
+              placeholder="Jot anything — it syncs across your devices…"
+              value={stickyNote} autoFocus
+              onChange={(e) => setStickyNote(e.target.value)}
+              onBlur={() => { savePrefs({ stickyNote }); setDirty(true); }} />
+          </div>
+        )}
         {view === "Tasks" && focus && (
           <div style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 14, color: T.accent, marginTop: 10 }}>
             {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
@@ -1543,22 +1577,24 @@ export default function TaskManager() {
           </div>
         )}
 
-        {/* search + filter (list & table) */}
+        {/* one quiet control line — content stays the hero */}
         {view === "Tasks" && (
           <>
-            <div style={S.toolRow}>
-              <div style={{ display: "flex", border: `1px solid ${T.line}`, borderRadius: 999, overflow: "hidden" }}>
-                {["List", "Table"].map((m) => (
-                  <button key={m} onClick={() => switchTaskMode(m)}
-                    style={{ border: "none", padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-                      background: taskMode === m ? T.accent : T.card, color: taskMode === m ? "#fff" : T.mute }}>{m}</button>
-                ))}
-              </div>
-              <button style={{ ...S.footBtn, borderColor: filtersActive ? T.accent : T.line, color: filtersActive ? T.accent : T.ink }} onClick={() => setShowFilters(!showFilters)}>
-                Filter{filtersActive ? " •" : ""}
-              </button>
-              <button
-                style={{ ...S.round, marginLeft: "auto", width: 36, height: 36, fontSize: 15, borderColor: (searchOpen || search) ? T.accent : T.line, color: (searchOpen || search) ? T.accent : T.mute }}
+            <div style={{ display: "flex", alignItems: "center", gap: 2, marginTop: 12, flexWrap: "wrap" }}>
+              {taskMode === "List" && ["Focus", "All"].map((lbl) => (
+                <button key={lbl} style={S.ghost(focus === (lbl === "Focus"))} onClick={() => switchFocus(lbl === "Focus")}>{lbl}</button>
+              ))}
+              {taskMode === "List" && <span style={{ color: T.line, fontSize: 11 }}>|</span>}
+              {["List", "Table"].map((m) => (
+                <button key={m} style={S.ghost(taskMode === m)} onClick={() => switchTaskMode(m)}>{m}</button>
+              ))}
+              <span style={{ marginLeft: "auto" }} />
+              {taskMode === "List" && (
+                <button style={S.ghost(compact)} onClick={() => { const v = !compact; setCompact(v); savePrefs({ compact: v }); }}
+                  title={compact ? "Switch to comfortable rows" : "Switch to compact rows"}>≡</button>
+              )}
+              <button style={S.ghost(filtersActive || showFilters)} onClick={() => setShowFilters(!showFilters)}>Filter{filtersActive ? " •" : ""}</button>
+              <button style={{ ...S.ghost(searchOpen || search), fontSize: 15, padding: "2px 8px" }}
                 onClick={() => { if (searchOpen) { setSearchOpen(false); setSearch(""); } else setSearchOpen(true); }}
                 aria-label={searchOpen ? "Close search" : "Search tasks"} title={searchOpen ? "Close search" : "Search tasks"}>
                 {searchOpen ? "✕" : "⌕"}
@@ -1603,28 +1639,11 @@ export default function TaskManager() {
               const shownGroups = focus ? focusGroups : groups;
               return (
                 <>
-                  {/* focus / all toggle */}
-                  {(groups.length > 0 || doneList.length > 0) && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-                      <div style={{ display: "flex", border: `1px solid ${T.line}`, borderRadius: 999, overflow: "hidden" }}>
-                        {[["Focus", true], ["All", false]].map(([lbl, val]) => (
-                          <button key={lbl} onClick={() => switchFocus(val)}
-                            style={{ border: "none", padding: "6px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-                              background: focus === val ? T.accent : T.card, color: focus === val ? "#fff" : T.mute }}>{lbl}</button>
-                        ))}
-                      </div>
-                      {focus && hiddenCount > 0 && (
-                        <button onClick={() => switchFocus(false)}
-                          style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: T.mute }}>
-                          {hiddenCount} more scheduled ›
-                        </button>
-                      )}
-                      <button onClick={() => { const v = !compact; setCompact(v); savePrefs({ compact: v }); }}
-                        title={compact ? "Switch to comfortable rows" : "Switch to compact rows"}
-                        style={{ marginLeft: "auto", background: "none", border: `1px solid ${compact ? T.accent : T.line}`, borderRadius: 999, padding: "5px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: compact ? T.accent : T.mute }}>
-                        {compact ? "≡ Compact" : "≣ Comfortable"}
-                      </button>
-                    </div>
+                  {focus && hiddenCount > 0 && (
+                    <button onClick={() => switchFocus(false)}
+                      style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: T.mute, padding: "8px 2px 0", display: "block" }}>
+                      {hiddenCount} more scheduled ›
+                    </button>
                   )}
 
                   {open.length === 0 && doneList.length === 0 && (
@@ -1819,28 +1838,28 @@ export default function TaskManager() {
               </div>
               <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-              {!selectMode && !reorderMode && iOwn(activeList) && <button style={S.footBtn} onClick={() => renameList(activeList.id)} title="Rename this list">Rename</button>}
-              {!selectMode && !reorderMode && iOwn(activeList) && <button style={S.footBtn} onClick={() => deleteList(activeList.id)} title="Delete this list">Delete</button>}
-              {!selectMode && !reorderMode && <button style={{ ...S.footBtn, borderColor: T.accent, color: T.accent }} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
-              {!selectMode && <button style={S.footBtn} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, marginTop: 8, flexWrap: "wrap" }}>
+              {!selectMode && !reorderMode && <button style={S.ghost(false)} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
+              {!selectMode && <button style={S.ghost(reorderMode)} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
+              {!selectMode && !reorderMode && activeList.items.some((i) => i.checked) && (
+                <button style={S.ghost(hideChecked)} onClick={() => { const v = !hideChecked; setHideChecked(v); savePrefs({ hideChecked: v }); }} title="Show or hide checked items">
+                  {hideChecked ? "Show done" : "Hide done"}
+                </button>
+              )}
+              {!selectMode && !reorderMode && <button style={S.ghost(false)} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
+              {!selectMode && !reorderMode && <button style={S.ghost(false)} onClick={() => printList(activeList)} title="Print this list">Print</button>}
               {!selectMode && !reorderMode && iOwn(activeList) && (
-                <button style={{ ...S.footBtn, borderColor: (activeList.sharedWith || []).length ? T.accent : T.line, color: (activeList.sharedWith || []).length ? T.accent : T.ink }}
+                <button style={S.ghost((activeList.sharedWith || []).length > 0)}
                   onClick={() => setShareFor(activeList.id)} title="Share this list with other users">
                   {(activeList.sharedWith || []).length ? `Shared · ${(activeList.sharedWith || []).length}` : "Share"}
                 </button>
               )}
+              {!selectMode && !reorderMode && iOwn(activeList) && <button style={S.ghost(false)} onClick={() => renameList(activeList.id)} title="Rename this list">Rename</button>}
+              {!selectMode && !reorderMode && iOwn(activeList) && <button style={S.ghost(false)} onClick={() => deleteList(activeList.id)} title="Delete this list">Delete</button>}
               {!selectMode && !reorderMode && !iOwn(activeList) && (
                 <span style={{ ...S.tag(T.accentSoft, T.accent), alignSelf: "center" }}>Shared by {activeList.owner}</span>
               )}
-              {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => printList(activeList)} title="Print this list">Print</button>}
-              {!selectMode && !reorderMode && activeList.items.some((i) => i.checked) && (
-                <button style={S.footBtn} onClick={() => { const v = !hideChecked; setHideChecked(v); savePrefs({ hideChecked: v }); }} title="Show or hide checked items">
-                  {hideChecked ? "Show done" : "Hide done"}
-                </button>
-              )}
-              {!selectMode && !reorderMode && <button style={S.footBtn} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
-              {selectMode && <button style={S.footBtn} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
+              {selectMode && <button style={S.ghost(false)} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
             </div>
             {!selectMode && !reorderMode && (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
@@ -2004,81 +2023,91 @@ export default function TaskManager() {
           </>
         )}
 
-        {/* ---------- DASHBOARD VIEW ---------- */}
-        {view === "Dashboard" && (
+
+        {/* ---------- HABITS VIEW ---------- */}
+        {view === "Habits" && (
           <>
-            <div style={S.statGrid}>
-              <div style={{ ...S.statCard(T.danger), cursor: "pointer" }} title="View overdue tasks"
-                onClick={() => goToTasksGroup({ groupKeys: ["Overdue"] })}>
-                <div style={{ ...S.statNum, color: stats.overdue ? T.danger : "inherit" }}>{stats.overdue}</div>
-                <div style={S.statLbl}>Overdue</div>
-              </div>
-              <div style={{ ...S.statCard(T.accent), cursor: "pointer" }} title="View tasks due today"
-                onClick={() => goToTasksGroup({ groupKeys: ["Today"] })}>
-                <div style={S.statNum}>{stats.dueToday}</div>
-                <div style={S.statLbl}>Due today</div>
-              </div>
-              <div style={{ ...S.statCard(T.amber), cursor: "pointer" }} title="View tasks due in the next 7 days"
-                onClick={() => goToTasksGroup({ groupKeys: ["Today", "Tomorrow", "This week"] })}>
-                <div style={S.statNum}>{stats.week}</div>
-                <div style={S.statLbl}>Due in next 7 days</div>
-              </div>
-              <div style={{ ...S.statCard(T.line), cursor: "pointer" }} title="View tasks completed this week"
-                onClick={() => goToTasksGroup({ status: "Done" })}>
-                <div style={S.statNum}>{stats.doneWeek}</div>
-                <div style={S.statLbl}>Completed this week</div>
-              </div>
+            <div style={{ fontSize: 13, color: T.mute, marginTop: 10 }}>
+              {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+              {habits.length > 0 && ` · ${habits.filter((h) => (habitLog[hKey(h.id, today)] || {}).d).length}/${habits.length} done today`}
             </div>
 
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Load — next 7 days</h3>
-              <div style={S.colWrap}>
-                {stats.next7.map((d) => (
-                  <div key={d.date} style={S.col}>
-                    <span style={{ fontSize: 11, color: T.mute }}>{d.count || ""}</span>
-                    <div style={S.colBar((d.count / maxNext7) * 100, d.date === today ? T.accent : T.tagBg === "#EFEEE7" ? "#CFCEC2" : "#3E453E")} />
-                    <span style={S.colLbl}>{d.date === today ? "Today" : dayLabel(d.date)}</span>
+            {habits.length === 0 && (
+              <div style={S.empty}>Track anything you do daily — exercise, reading, water. Add your first habit below, tap the circle each day you do it, and use “log” to note reps, weights, or details.</div>
+            )}
+
+            {habits.map((h) => {
+              const todayEntry = habitLog[hKey(h.id, today)] || {};
+              const streak = habitStreak(h.id);
+              const days = lastNDates(14);
+              const histOpen = openHabitHistory[h.id];
+              const historyEntries = Object.entries(habitLog)
+                .filter(([k, v]) => k.startsWith(h.id + "|") && (v.d || v.n))
+                .map(([k, v]) => [k.slice(h.id.length + 1), v])
+                .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+                .slice(0, 30);
+              return (
+                <div key={h.id} style={{ ...S.dashCard, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <button style={{ ...S.check(!!todayEntry.d), width: 30, height: 30, minWidth: 30, borderRadius: 15, fontSize: 17 }}
+                      onClick={() => toggleHabitDay(h.id, today)} aria-label={todayEntry.d ? "Mark not done today" : "Mark done today"}>
+                      {todayEntry.d ? "✓" : ""}
+                    </button>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15.5, fontWeight: 700 }}>{h.name}</div>
+                      <div style={{ fontSize: 12, color: T.mute, marginTop: 1 }}>
+                        {streak > 0 ? `${streak} day streak` : "No streak yet"}
+                      </div>
+                    </div>
+                    <button style={S.ghost(!!todayEntry.n)} onClick={() => editHabitNote(h.id, today)}>
+                      {todayEntry.n ? "edit log" : "＋ log"}
+                    </button>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Completed — last 7 days</h3>
-              <div style={S.colWrap}>
-                {stats.last7.map((d) => (
-                  <div key={d.date} style={S.col}>
-                    <span style={{ fontSize: 11, color: T.mute }}>{d.count || ""}</span>
-                    <div style={S.colBar((d.count / maxLast7) * 100, T.accent)} />
-                    <span style={S.colLbl}>{d.date === today ? "Today" : dayLabel(d.date)}</span>
+                  {todayEntry.n && (
+                    <div style={{ fontSize: 13.5, color: T.ink, background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{todayEntry.n}</div>
+                  )}
+                  <div style={{ display: "flex", gap: 4, marginTop: 12, alignItems: "center" }}>
+                    {days.map((d) => {
+                      const e = habitLog[hKey(h.id, d)] || {};
+                      return (
+                        <button key={d} onClick={() => toggleHabitDay(h.id, d)}
+                          title={`${fmtShort(d)}${e.n ? ` — ${e.n}` : ""}`}
+                          style={{ width: 16, height: 16, borderRadius: 8, border: "none", cursor: "pointer", padding: 0, flexShrink: 0,
+                            background: e.d ? T.accent : T.tagBg, opacity: d === today ? 1 : 0.85,
+                            outline: d === today ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
+                      );
+                    })}
+                    <span style={{ fontSize: 10.5, color: T.mute, marginLeft: 6 }}>14 days</span>
                   </div>
-                ))}
+                  <div style={{ display: "flex", gap: 2, marginTop: 8 }}>
+                    <button style={S.ghost(histOpen)} onClick={() => setOpenHabitHistory((p) => ({ ...p, [h.id]: !p[h.id] }))}>
+                      {histOpen ? "hide history" : "history"}
+                    </button>
+                    <span style={{ marginLeft: "auto" }} />
+                    <button style={S.ghost(false)} onClick={() => renameHabit(h.id)}>rename</button>
+                    <button style={S.ghost(false)} onClick={() => deleteHabit(h.id)}>delete</button>
+                  </div>
+                  {histOpen && (
+                    <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
+                      {historyEntries.length === 0 && <div style={{ fontSize: 13, color: T.mute }}>Nothing logged yet.</div>}
+                      {historyEntries.map(([d, e]) => (
+                        <div key={d} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 13, alignItems: "baseline" }}>
+                          <span style={{ color: e.d ? T.accent : T.mute, minWidth: 64, fontWeight: 600 }}>{fmtShort(d)}</span>
+                          <span style={{ color: e.n ? T.ink : T.mute, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{e.n || (e.d ? "Done" : "—")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <div style={{ ...S.addCard, marginTop: 14 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input style={S.addInput} placeholder="New habit (e.g. Exercise, Reading)…" value={newHabitName}
+                  onChange={(e) => setNewHabitName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addHabit()} />
+                <button style={S.addBtn} onClick={addHabit}>Add</button>
               </div>
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Open tasks by category</h3>
-              {stats.catRows.length === 0 && <div style={{ color: T.mute, fontSize: 14 }}>No open tasks.</div>}
-              {stats.catRows.map(([cat, n]) => (
-                <div key={cat} style={{ ...S.barRow, cursor: "pointer" }} title={`View open "${cat}" tasks`}
-                  onClick={() => goToTasksGroup({ cat })}>
-                  <span style={S.barLbl}>{cat}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / maxCat) * 100, cat === "Uncategorized" ? T.mute : dotColor(cat, dark, colorMap))} /></div>
-                  <span style={S.barVal}>{n}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={S.dashCard}>
-              <h3 style={S.dashTitle}>Unscheduled</h3>
-              {Object.entries(stats.buckets).map(([b, n]) => (
-                <div key={b} style={{ ...S.barRow, cursor: "pointer" }} title={`View "${b}" tasks`}
-                  onClick={() => goToTasksGroup({ groupKeys: [b] })}>
-                  <span style={S.barLbl}>{GROUP_LABEL[b] || b}</span>
-                  <div style={S.barTrack}><div style={S.barFill((n / Math.max(1, ...Object.values(stats.buckets))) * 100, T.amber)} /></div>
-                  <span style={S.barVal}>{n}</span>
-                </div>
-              ))}
             </div>
           </>
         )}

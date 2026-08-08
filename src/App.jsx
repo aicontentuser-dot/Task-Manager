@@ -22,7 +22,7 @@ const store =
    The Worker URL is baked in here, so a new device just opens the app
    and logs in — no sheet URL or script URL to paste, ever. Replace the
    placeholder below with your deployed Worker URL (no trailing slash). */
-const WORKER_URL = "https://task-worker.aicontentuser.workers.dev";
+const WORKER_URL = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
 
 /* ---------- storage ---------- */
 const STORE_KEY = "taskmanager:tasks-v1"; // same key: existing tasks carry over
@@ -64,7 +64,7 @@ const nextWeekday = (from, wd) => {
 };
 const parseQuickAdd = (raw, today, ignored) => {
   let title = " " + raw + " ";
-  const out = { dueDate: "", dueTime: "", recurrence: "", bucket: "", matches: [] };
+  const out = { dueDate: "", dueTime: "", reminderDate: "", reminderTime: "", recurrence: "", bucket: "", matches: [] };
   const skip = ignored || {};
   const eat = (re, key, label, apply) => {
     const m = title.match(re);
@@ -75,21 +75,28 @@ const parseQuickAdd = (raw, today, ignored) => {
     title = title.replace(re, " ");
   };
   const wdIdx = (w) => WEEKDAYS.findIndex((x) => x.startsWith(w.toLowerCase()));
+  // "remind me tomorrow at 9am" should set a reminder, not a due date — this
+  // has to run before the date/time matchers below so they know which
+  // fields to fill in. Matches "remind", "remind me", or "reminder".
+  eat(/\bremind(?:er)?(?:\s+me)?\b/i, "remind", () => "🔔 Reminder", () => { out.isReminder = true; });
+  const setDate = (d) => { if (out.isReminder) out.reminderDate = d; else out.dueDate = d; };
+  const setTime = (t) => { if (out.isReminder) out.reminderTime = t; else out.dueTime = t; };
   eat(/\bevery\s+(\d+)\s+(day|week|month)s?\b/i, "rec", (m) => `↻ every ${m[1]} ${m[2]}s`, (m) => { out.recurrence = `custom:${m[1]}:${m[2]}s`; });
-  eat(/\bevery\s+(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(?:day|sday|nesday|urday)?\b/i, "rec", (m) => `↻ weekly`, (m) => { out.recurrence = "weekly"; const i = wdIdx(m[1]); if (i >= 0) out.dueDate = nextWeekday(today, i); });
+  eat(/\bevery\s+(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(?:day|sday|nesday|urday)?\b/i, "rec", (m) => `↻ weekly`, (m) => { out.recurrence = "weekly"; const i = wdIdx(m[1]); if (i >= 0) setDate(nextWeekday(today, i)); });
   eat(/\b(daily|every\s?day)\b/i, "rec", () => "↻ Daily", () => { out.recurrence = "daily"; });
   eat(/\b(weekly|every\s?week)\b/i, "rec", () => "↻ Weekly", () => { out.recurrence = "weekly"; });
   eat(/\b(monthly|every\s?month)\b/i, "rec", () => "↻ Monthly", () => { out.recurrence = "monthly"; });
   eat(/\b(quarterly)\b/i, "rec", () => "↻ Quarterly", () => { out.recurrence = "quarterly"; });
   eat(/\b(yearly|annually|every\s?year)\b/i, "rec", () => "↻ Yearly", () => { out.recurrence = "yearly"; });
-  eat(/\btoday\b/i, "date", () => "Today", () => { out.dueDate = today; });
-  eat(/\b(tomorrow|tmrw|tmr)\b/i, "date", () => "Tomorrow", () => { out.dueDate = addDays(today, 1); });
-  eat(/\bnext\s?week\b/i, "date", () => "Next week", () => { out.bucket = "Next week"; });
+  eat(/\btoday\b/i, "date", () => "Today", () => { setDate(today); });
+  eat(/\b(tomorrow|tmrw|tmr)\b/i, "date", () => "Tomorrow", () => { setDate(addDays(today, 1)); });
+  eat(/\bnext\s?week\b/i, "date", () => "Next", () => { out.bucket = "Next week"; });
   eat(/\bsomeday\b/i, "date", () => "Someday", () => { out.bucket = "Someday"; });
-  eat(/\b(?:next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i, "date", (m) => m[1][0].toUpperCase() + m[1].slice(1), (m) => { out.dueDate = nextWeekday(today, wdIdx(m[1])); });
-  eat(/\b(?:at\s+)?(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\b/i, "time", (m) => `${m[1]}${m[2] ? ":" + m[2] : ""} ${m[3].toUpperCase()}`, (m) => { let h = (+m[1]) % 12; if (/pm/i.test(m[3])) h += 12; out.dueTime = `${pad(h)}:${m[2] || "00"}`; });
-  eat(/\b([01]?\d|2[0-3]):([0-5]\d)\b/, "time", (m) => m[0], (m) => { out.dueTime = `${pad(+m[1])}:${m[2]}`; });
+  eat(/\b(?:next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i, "date", (m) => m[1][0].toUpperCase() + m[1].slice(1), (m) => { setDate(nextWeekday(today, wdIdx(m[1]))); });
+  eat(/\b(?:at\s+)?(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\b/i, "time", (m) => `${m[1]}${m[2] ? ":" + m[2] : ""} ${m[3].toUpperCase()}`, (m) => { let h = (+m[1]) % 12; if (/pm/i.test(m[3])) h += 12; setTime(`${pad(h)}:${m[2] || "00"}`); });
+  eat(/\b([01]?\d|2[0-3]):([0-5]\d)\b/, "time", (m) => m[0], (m) => { setTime(`${pad(+m[1])}:${m[2]}`); });
   if (out.dueTime && !out.dueDate && !out.bucket) { out.dueDate = today; out.matches.push({ key: "date", label: "Today" }); }
+  if (out.reminderTime && !out.reminderDate) { out.reminderDate = today; out.matches.push({ key: "date", label: "Today" }); }
   out.title = title.replace(/\s+/g, " ").trim();
   return out;
 };
@@ -149,6 +156,10 @@ const THEMES = {
 };
 
 const BUCKETS = ["Inbox", "Next week", "Someday"];
+// Display-only relabeling — the underlying bucket value stays "Next week"
+// everywhere (sheet data, sync, collapse state, scroll anchors) so nothing
+// about how data is stored or matched changes, only what the person reads.
+const GROUP_LABEL = { "Next week": "Next" };
 
 /* ---------- smart list types ----------
    Every list has sections; types add extra per-item fields. */
@@ -545,7 +556,7 @@ export default function TaskManager() {
       id: uid(), title, done: false, createdAt: today, completedAt: "", nextId: "", notes: draft.notes || "",
       category: draft.category, subCategory: draft.subCategory,
       dueDate, dueTime: draft.dueTime || parsed.dueTime,
-      reminderDate: draft.reminderDate, reminderTime: draft.reminderTime,
+      reminderDate: draft.reminderDate || parsed.reminderDate, reminderTime: draft.reminderTime || parsed.reminderTime,
       recurrence: draft.recurrence || parsed.recurrence,
       bucket: parsed.bucket || draft.bucket,
     };
@@ -1114,6 +1125,13 @@ export default function TaskManager() {
     gTitle: (danger, bucket) => ({ fontFamily: "'Archivo', sans-serif", fontWeight: 700, fontSize: 12.5, letterSpacing: "0.08em", textTransform: "uppercase", color: danger ? T.danger : bucket ? T.accent : T.mute, margin: "20px 0 8px", display: "flex", alignItems: "center", gap: 8 }),
     count: { fontSize: 11, background: T.tagBg, color: T.ink, borderRadius: 999, padding: "1px 8px", fontWeight: 600 },
     card: (done, edge, tint) => ({ background: tint || T.card, borderTop: `1px solid ${T.line}`, borderRight: `1px solid ${T.line}`, borderBottom: `1px solid ${T.line}`, borderLeft: `3px solid ${edge || T.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, boxShadow: T.shadow, transition: "opacity 0.2s", minHeight: 54, boxSizing: "border-box" }),
+    // Quieter row style for TaskCard specifically — whitespace + a thin
+    // bottom separator instead of a bordered/shadowed card, with colour
+    // reserved for the one signal that matters (overdue). S.card above is
+    // left as-is since Lists and list-items still use it.
+    taskRow: (done, overdue) => ({ background: "transparent", borderBottom: `1px solid ${T.line}`, borderLeft: `3px solid ${overdue ? T.danger : "transparent"}`, padding: "11px 6px 11px 9px", marginBottom: 0, display: "flex", gap: 10, alignItems: "flex-start", opacity: done ? 0.55 : 1, transition: "opacity 0.2s, background 0.15s", minHeight: 54, boxSizing: "border-box" }),
+    metaItem: { fontSize: 12.5, color: T.mute, display: "inline-flex", alignItems: "center", gap: 5 },
+    metaDot: (color) => ({ width: 7, height: 7, minWidth: 7, borderRadius: 4, background: color, display: "inline-block" }),
     check: (done) => ({ width: 22, height: 22, minWidth: 22, borderRadius: 11, border: `2px solid ${done ? T.accent : T.line}`, background: done ? T.accent : "transparent", color: "#fff", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", marginTop: 1, padding: 0, transition: "background 0.15s, border-color 0.15s, transform 0.15s", transform: done ? "scale(1.05)" : "scale(1)" }),
     title: (done) => ({ fontSize: 15.5, fontWeight: 500, textDecoration: done ? "line-through" : "none", overflowWrap: "anywhere" }),
     meta: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5 },
@@ -1280,7 +1298,7 @@ export default function TaskManager() {
     const overdue = !t.done && t.dueDate && t.dueDate < today;
     if (compact) {
       return (
-        <div style={{ ...S.card(t.done, t.category ? dotColor(t.category, dark, colorMap) : T.line, overdue ? T.dangerSoft : null), minHeight: 0, padding: "5px 10px", marginBottom: 5, gap: 8, alignItems: "center" }}>
+        <div style={{ ...S.taskRow(t.done, overdue), minHeight: 0, padding: "6px 6px 6px 9px", marginBottom: 0, gap: 8, alignItems: "center" }}>
           <button style={{ ...S.check(t.done), width: 19, height: 19, minWidth: 19, fontSize: 12, marginTop: 0 }} onClick={() => toggle(t.id)} aria-label={t.done ? "Mark open" : "Mark done"}>{t.done ? "✓" : ""}</button>
           <div style={{ flex: 1, minWidth: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }} onClick={() => setEditing({ ...t })}>
             <span style={{ fontSize: 14, fontWeight: 500, textDecoration: t.done ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>{t.title}</span>
@@ -1294,25 +1312,29 @@ export default function TaskManager() {
       );
     }
     return (
-    <div style={S.card(t.done, t.category ? dotColor(t.category, dark, colorMap) : T.line, !t.done && t.dueDate && t.dueDate < today ? T.dangerSoft : null)}>
+    <div style={S.taskRow(t.done, overdue)}>
       <button style={S.check(t.done)} onClick={() => toggle(t.id)} aria-label={t.done ? "Mark open" : "Mark done"}>{t.done ? "✓" : ""}</button>
       <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => setEditing({ ...t })}>
         <div style={S.title(t.done)}>{t.title}</div>
         <div style={S.meta}>
-          {t.category && <span style={S.tag(catStyle(t.category, dark, colorMap).background, catStyle(t.category, dark, colorMap).color)}>{t.category}</span>}
-          {t.subCategory && <span style={{ ...S.tag(catStyle(t.subCategory, dark, colorMap).background, catStyle(t.subCategory, dark, colorMap).color), boxShadow: `inset 0 0 0 1px ${dotColor(t.subCategory, dark, colorMap)}` }}>{t.subCategory}</span>}
+          {t.category && (
+            <span style={S.metaItem}>
+              <span style={S.metaDot(dotColor(t.category, dark, colorMap))} />
+              {t.category}{t.subCategory ? ` · ${t.subCategory}` : ""}
+            </span>
+          )}
           {t.dueDate && (
-            <span style={S.tag(t.dueDate < today && !t.done ? T.dangerSoft : T.tagBg, t.dueDate < today && !t.done ? T.danger : T.mute)}>
+            <span style={{ ...S.metaItem, color: t.dueDate < today && !t.done ? T.danger : T.mute, fontWeight: t.dueDate < today && !t.done ? 600 : 400 }}>
               {fmtDate(t.dueDate)}{t.dueTime ? ` · ${fmtTime(t.dueTime)}` : ""}
             </span>
           )}
-          {t.recurrence && <span style={S.tag(T.tagBg, T.mute)}>↻ {recLabel(t.recurrence)}</span>}
-          {t.reminderDate && <span style={S.tag(T.tagBg, T.mute)}>🔔 {fmtDate(t.reminderDate)}{t.reminderTime ? ` ${fmtTime(t.reminderTime)}` : ""}</span>}
+          {t.recurrence && <span style={S.metaItem}>↻ {recLabel(t.recurrence)}</span>}
+          {t.reminderDate && <span style={S.metaItem}>🔔 {fmtDate(t.reminderDate)}{t.reminderTime ? ` ${fmtTime(t.reminderTime)}` : ""}</span>}
           {t.notes && (() => {
             const n = t.notes.split("\n").filter((l) => l.trim().startsWith("•")).length;
             return (
               <button onClick={(e) => { e.stopPropagation(); setOpenNotes((prev) => ({ ...prev, [t.id]: !prev[t.id] })); }}
-                style={{ ...S.tag(T.accentSoft, T.accent), border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+                style={{ ...S.metaItem, border: "none", background: "none", cursor: "pointer", fontFamily: "inherit", color: T.accent, padding: 0 }}>
                 ☰ {n ? `${n} items` : "notes"} {openNotes[t.id] ? "▴" : "▾"}
               </button>
             );
@@ -1336,12 +1358,33 @@ export default function TaskManager() {
   const maxLast7 = Math.max(1, ...stats.last7.map((d) => d.count));
 
   return (
-    <div style={S.app}>
+    <div style={S.app} className="tm-app">
       <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+      {/* Mobile layout (below) is untouched — this only kicks in on wider
+          screens, replacing the centered mobile-width column with a
+          persistent sidebar + full-width content, per the redesign review. */}
+      <style>{`
+        @media (min-width: 900px) {
+          .tm-app { display: flex !important; align-items: flex-start; padding-bottom: 24px !important; }
+          .tm-sidebar { display: flex !important; }
+          .tm-bottomnav { display: none !important; }
+          .tm-wrap { max-width: 900px !important; margin: 0 !important; padding: 28px 32px !important; flex: 1 1 auto; min-width: 0; }
+          .tm-fab { right: 32px !important; }
+        }
+      `}</style>
+      <nav className="tm-sidebar" style={{ display: "none", flexDirection: "column", width: 232, minWidth: 232, position: "sticky", top: 0, height: "100vh", padding: "26px 14px", borderRight: `1px solid ${T.line}`, gap: 2, boxSizing: "border-box" }}>
+        <div style={{ fontFamily: "'Archivo', sans-serif", fontWeight: 800, fontSize: 17, padding: "0 10px 22px", color: T.ink }}>Task Manager</div>
+        {NAV.map((v) => (
+          <button key={v} onClick={() => switchView(v)}
+            style={{ display: "flex", alignItems: "center", gap: 10, background: view === v ? T.tagBg : "none", border: "none", borderRadius: 8, padding: "9px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 14.5, fontWeight: view === v ? 700 : 500, color: view === v ? T.accent : T.ink, textAlign: "left" }}>
+            <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{NAV_ICON[v]}</span>{v}
+          </button>
+        ))}
+      </nav>
       <datalist id="cats">{categories.filter((c) => c !== "All").map((c) => <option key={c} value={c} />)}</datalist>
       <datalist id="subcats">{subSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
 
-      <div style={S.wrap}>
+      <div style={S.wrap} className="tm-wrap">
         <header style={S.header}>
           <div>
             <h1 style={S.h1}>{view === "Tasks" ? "Tasks" : view}</h1>
@@ -1409,7 +1452,7 @@ export default function TaskManager() {
                 <div style={S.quickRow}>
                   <button style={S.qChip(draft.dueDate === today)} onClick={() => setDraft({ ...draft, dueDate: draft.dueDate === today ? "" : today })}>Today</button>
                   <button style={S.qChip(draft.dueDate === tomorrow)} onClick={() => setDraft({ ...draft, dueDate: draft.dueDate === tomorrow ? "" : tomorrow })}>Tomorrow</button>
-                  <button style={S.qChip(!draft.dueDate && draft.bucket === "Next week")} onClick={() => setDraft({ ...draft, dueDate: "", bucket: draft.bucket === "Next week" ? "Inbox" : "Next week" })}>Next week</button>
+                  <button style={S.qChip(!draft.dueDate && draft.bucket === "Next week")} onClick={() => setDraft({ ...draft, dueDate: "", bucket: draft.bucket === "Next week" ? "Inbox" : "Next week" })}>Next</button>
                   <button style={S.qChip(!draft.dueDate && draft.bucket === "Someday")} onClick={() => setDraft({ ...draft, dueDate: "", bucket: draft.bucket === "Someday" ? "Inbox" : "Someday" })}>Someday</button>
                   <button style={S.qChip(false)} onClick={() => setMoreFields(!moreFields)}>{moreFields ? "Less ▴" : "More ▾"}</button>
                 </div>
@@ -1570,7 +1613,7 @@ export default function TaskManager() {
                       <section key={g.key} id={"grp-" + g.key}>
                         <h2 style={{ ...S.gTitle(g.danger, g.bucket || g.accent), cursor: "pointer", userSelect: "none" }} onClick={() => toggleCollapse(g.key)}>
                           <span style={{ fontWeight: 400, fontSize: 11 }}>{isCollapsed ? "▸" : "▾"}</span>
-                          {g.key} <span style={S.count}>{g.items.length}</span>
+                          {GROUP_LABEL[g.key] || g.key} <span style={S.count}>{g.items.length}</span>
                         </h2>
                         {items.map((t) => <TaskCard key={t.id} t={t} />)}
                         {!isCollapsed && !isExpanded && moreCount > 0 && (
@@ -2002,7 +2045,7 @@ export default function TaskManager() {
               {Object.entries(stats.buckets).map(([b, n]) => (
                 <div key={b} style={{ ...S.barRow, cursor: "pointer" }} title={`View "${b}" tasks`}
                   onClick={() => goToTasksGroup({ groupKeys: [b] })}>
-                  <span style={S.barLbl}>{b}</span>
+                  <span style={S.barLbl}>{GROUP_LABEL[b] || b}</span>
                   <div style={S.barTrack}><div style={S.barFill((n / Math.max(1, ...Object.values(stats.buckets))) * 100, T.amber)} /></div>
                   <span style={S.barVal}>{n}</span>
                 </div>
@@ -2151,11 +2194,11 @@ export default function TaskManager() {
 
       {/* floating add button (Tasks view) */}
       {view === "Tasks" && !addOpen && !editing && (
-        <button style={S.fab} onClick={() => { setAddOpen(true); setAddFocus(true); }} aria-label="Add task" title="Add task">＋</button>
+        <button style={S.fab} className="tm-fab" onClick={() => { setAddOpen(true); setAddFocus(true); }} aria-label="Add task" title="Add task">＋</button>
       )}
 
-      {/* bottom navigation */}
-      <div style={{ ...S.footer, justifyContent: "space-around", padding: "6px 8px calc(6px + env(safe-area-inset-bottom))" }}>
+      {/* bottom navigation (mobile only — hidden by the sidebar media query above) */}
+      <div style={{ ...S.footer, justifyContent: "space-around", padding: "6px 8px calc(6px + env(safe-area-inset-bottom))" }} className="tm-bottomnav">
         {NAV.map((v) => (
           <button key={v} onClick={() => switchView(v)}
             style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",

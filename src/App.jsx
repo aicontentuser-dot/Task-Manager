@@ -378,6 +378,18 @@ export default function TaskManager() {
         }
       } catch (e) { /* not logged in */ }
       if (!cancelled) { setLoading(false); setAuthReady(true); }
+      // Home-screen shortcut actions (from manifest "shortcuts"). Handled
+      // here, after prefs load, so the saved view can't override the intent.
+      // The param is stripped so refreshing doesn't re-trigger it.
+      if (!cancelled) {
+        const action = new URLSearchParams(window.location.search).get("action");
+        if (action) {
+          window.history.replaceState({}, "", window.location.pathname);
+          if (action === "add") { setView("Tasks"); setAddOpen(true); setAddFocus(true); }
+          else if (action === "note") { setStickyOpen(true); }
+          else if (action === "habits") { setView("Habits"); }
+        }
+      }
     })();
     return () => { cancelled = true; };
   }, []);

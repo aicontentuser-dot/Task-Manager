@@ -240,12 +240,14 @@ export default function TaskManager() {
   const [activeListId, setActiveListId] = useState(null);
   const [addingList, setAddingList] = useState(false); // true when the '+' tab is selected
   const [listCatFilter, setListCatFilter] = useState("All"); // groups the list tabs by category
+  const [listActionsOpen, setListActionsOpen] = useState(false); // '⋯' toggle for list actions
   const [settingsTab, setSettingsTab] = useState("General");
   // Habits + sticky note live in the synced Settings blob (like listCats),
   // so they follow you across devices with no Worker changes.
   const [habits, setHabits] = useState([]); // [{id, name}]
   const [habitLog, setHabitLog] = useState({}); // { "habitId|YYYY-MM-DD": {d:1, n:"note"} }
   const [openHabitHistory, setOpenHabitHistory] = useState({});
+  const [expandedHabit, setExpandedHabit] = useState(null); // one habit open at a time in the grid
   const [newHabitName, setNewHabitName] = useState("");
   const [logEditFor, setLogEditFor] = useState(null); // habit id whose today-log editor is open
   const [logRows, setLogRows] = useState([]); // draft [{e, s, r, w}]
@@ -817,7 +819,7 @@ export default function TaskManager() {
 
   /* clear the item inputs when switching lists, so a section name
      from one list doesn't leak into another */
-  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); setReorderMode(false); }, [activeListId]);
+  useEffect(() => { setNewItemText(""); setNewItemSection(""); setNewItemQty(""); setNewItemUnit(""); setNewItemUrl(""); setNewItemPrice(""); setSelectMode(false); setSelectedIds({}); setReorderMode(false); setListActionsOpen(false); }, [activeListId]);
   const listMatchesCat = (l, f) => f === "All" ? true : f === "Other" ? !listCats.includes(l.category || "") : (l.category || "") === f;
   useEffect(() => {
     if (view !== "Lists" || activeListId || addingList || lists.length === 0) return;
@@ -1815,8 +1817,8 @@ export default function TaskManager() {
                     </div>
                   );
                 })()}
-                <div style={{ display: "flex", alignItems: "center", marginTop: 2 }}>
-                  <div style={{ display: "flex", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", marginTop: 2 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", flex: 1, minWidth: 0 }}>
                     {lists.filter((l) => listMatchesCat(l, listCatFilter)).map((l) => (
                       <button key={l.id} onClick={() => { setActiveListId(l.id); setAddingList(false); }}
                         style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, border: "none", borderBottom: `2px solid ${!addingList && activeListId === l.id ? T.accent : "transparent"}`, background: "none", padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: !addingList && activeListId === l.id ? 700 : 500, color: !addingList && activeListId === l.id ? T.ink : T.mute, whiteSpace: "nowrap" }}>
@@ -1876,52 +1878,61 @@ export default function TaskManager() {
           <>
             <div style={{ textAlign: "center", marginTop: 4 }}>
               <div style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 5, background: dotColor(activeList.name, dark, colorMap), display: "inline-block" }} />{activeList.name}
+                <span style={{ width: 10, height: 10, borderRadius: 5, background: dotColor(activeList.name, dark, colorMap), display: "inline-block" }} />
+                {activeList.name}
+                <button style={{ ...S.ghost(listActionsOpen), fontSize: 16, padding: "0 6px" }} onClick={() => setListActionsOpen(!listActionsOpen)} aria-label="List options" title="List options">⋯</button>
               </div>
-              <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>{activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked</div>
+              <div style={{ fontSize: 12.5, color: T.mute, marginTop: 2 }}>
+                {activeList.items.filter((i) => i.checked).length}/{activeList.items.length} checked
+                {!iOwn(activeList) && ` · shared by ${activeList.owner}`}
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, marginTop: 8, flexWrap: "wrap" }}>
-              {!selectMode && !reorderMode && <button style={S.ghost(false)} onClick={() => { setSelectMode(true); setSelectedIds({}); }} title="Pick items to turn into one task">Select</button>}
-              {!selectMode && <button style={S.ghost(reorderMode)} onClick={() => setReorderMode(!reorderMode)}>{reorderMode ? "Done" : "Order"}</button>}
-              {!selectMode && !reorderMode && activeList.items.some((i) => i.checked) && (
-                <button style={S.ghost(hideChecked)} onClick={() => { const v = !hideChecked; setHideChecked(v); savePrefs({ hideChecked: v }); }} title="Show or hide checked items">
-                  {hideChecked ? "Show done" : "Hide done"}
-                </button>
-              )}
-              {!selectMode && !reorderMode && <button style={S.ghost(false)} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>}
-              {!selectMode && !reorderMode && <button style={S.ghost(false)} onClick={() => printList(activeList)} title="Print this list">Print</button>}
-              {!selectMode && !reorderMode && iOwn(activeList) && (
-                <button style={S.ghost((activeList.sharedWith || []).length > 0)}
-                  onClick={() => setShareFor(activeList.id)} title="Share this list with other users">
-                  {(activeList.sharedWith || []).length ? `Shared · ${(activeList.sharedWith || []).length}` : "Share"}
-                </button>
-              )}
-              {!selectMode && !reorderMode && iOwn(activeList) && <button style={S.ghost(false)} onClick={() => renameList(activeList.id)} title="Rename this list">Rename</button>}
-              {!selectMode && !reorderMode && iOwn(activeList) && <button style={S.ghost(false)} onClick={() => deleteList(activeList.id)} title="Delete this list">Delete</button>}
-              {!selectMode && !reorderMode && !iOwn(activeList) && (
-                <span style={{ ...S.tag(T.accentSoft, T.accent), alignSelf: "center" }}>Shared by {activeList.owner}</span>
-              )}
-              {selectMode && <button style={S.ghost(false)} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
-            </div>
-            {!selectMode && !reorderMode && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-                <span style={{ fontSize: 12, color: T.mute }}>Type:</span>
-                <select value={activeList.type || "checklist"} onChange={(e) => setListType(activeList.id, e.target.value)}
-                  style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
-                  {Object.entries(LIST_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-                </select>
-                {activeList.type === "custom" && CUSTOM_CHOICES.map((f) => (
-                  <button key={f} style={S.qChip((activeList.fields || []).includes(f))} onClick={() => toggleListField(activeList.id, f)}>{f}</button>
-                ))}
-                {listCats.length > 0 && <>
-                  <span style={{ fontSize: 12, color: T.mute, marginLeft: 6 }}>Category:</span>
-                  <select value={listCats.includes(activeList.category) ? activeList.category : ""} onChange={(e) => setListCategory(activeList.id, e.target.value)}
+            {(reorderMode || selectMode) && (
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 6 }}>
+                {reorderMode && <button style={S.ghost(true)} onClick={() => setReorderMode(false)}>Done ordering</button>}
+                {selectMode && <button style={S.ghost(false)} onClick={() => { setSelectMode(false); setSelectedIds({}); }}>Cancel</button>}
+              </div>
+            )}
+            {listActionsOpen && !selectMode && !reorderMode && (
+              <>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, marginTop: 6, flexWrap: "wrap" }}>
+                  <button style={S.ghost(false)} onClick={() => { setSelectMode(true); setSelectedIds({}); setListActionsOpen(false); }} title="Pick items to turn into one task">Select</button>
+                  <button style={S.ghost(false)} onClick={() => { setReorderMode(true); setListActionsOpen(false); }}>Order</button>
+                  {activeList.items.some((i) => i.checked) && (
+                    <button style={S.ghost(hideChecked)} onClick={() => { const v = !hideChecked; setHideChecked(v); savePrefs({ hideChecked: v }); }} title="Show or hide checked items">
+                      {hideChecked ? "Show done" : "Hide done"}
+                    </button>
+                  )}
+                  <button style={S.ghost(false)} onClick={() => resetList(activeList.id)} title="Uncheck everything">Reset</button>
+                  <button style={S.ghost(false)} onClick={() => printList(activeList)} title="Print this list">Print</button>
+                  {iOwn(activeList) && (
+                    <button style={S.ghost((activeList.sharedWith || []).length > 0)}
+                      onClick={() => setShareFor(activeList.id)} title="Share this list with other users">
+                      {(activeList.sharedWith || []).length ? `Shared · ${(activeList.sharedWith || []).length}` : "Share"}
+                    </button>
+                  )}
+                  {iOwn(activeList) && <button style={S.ghost(false)} onClick={() => renameList(activeList.id)} title="Rename this list">Rename</button>}
+                  {iOwn(activeList) && <button style={S.ghost(false)} onClick={() => deleteList(activeList.id)} title="Delete this list">Delete</button>}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "center", marginTop: 6 }}>
+                  <span style={{ fontSize: 12, color: T.mute }}>Type:</span>
+                  <select value={activeList.type || "checklist"} onChange={(e) => setListType(activeList.id, e.target.value)}
                     style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
-                    <option value="">None</option>
-                    {listCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {Object.entries(LIST_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                   </select>
-                </>}
-              </div>
+                  {activeList.type === "custom" && CUSTOM_CHOICES.map((f) => (
+                    <button key={f} style={S.qChip((activeList.fields || []).includes(f))} onClick={() => toggleListField(activeList.id, f)}>{f}</button>
+                  ))}
+                  {listCats.length > 0 && <>
+                    <span style={{ fontSize: 12, color: T.mute, marginLeft: 6 }}>Category:</span>
+                    <select value={listCats.includes(activeList.category) ? activeList.category : ""} onChange={(e) => setListCategory(activeList.id, e.target.value)}
+                      style={{ ...S.input, width: "auto", padding: "5px 8px", fontSize: 13 }}>
+                      <option value="">None</option>
+                      {listCats.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </>}
+                </div>
+              </>
             )}
             {selectMode && (() => {
               const n = Object.values(selectedIds).filter(Boolean).length;
@@ -2075,161 +2086,176 @@ export default function TaskManager() {
             </div>
 
             {habits.length === 0 && (
-              <div style={S.empty}>Track anything you do daily — exercise, reading, water. Add your first habit below, tap the circle each day you do it, and use “log” to note reps, weights, or details.</div>
+              <div style={S.empty}>Track anything you do daily — exercise, reading, water. Add your first habit below, tap today's circle when you do it, and expand a habit to log reps and weights.</div>
             )}
 
-            {habits.map((h) => {
-              const todayEntry = habitLog[hKey(h.id, today)] || {};
-              const streak = habitStreak(h.id);
-              const days = lastNDates(14);
-              const histOpen = openHabitHistory[h.id];
-              const editing = logEditFor === h.id;
-              const exOpen = exEditFor === h.id;
-              const historyEntries = Object.entries(habitLog)
-                .filter(([k, v]) => k.startsWith(h.id + "|") && (v.d || v.n || (v.rows && v.rows.length)))
-                .map(([k, v]) => [k.slice(h.id.length + 1), v])
-                .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-                .slice(0, 30);
+            {/* compact grid: habits as rows, last 7 days as columns */}
+            {habits.length > 0 && (() => {
+              const days = lastNDates(7);
               return (
-                <div key={h.id} style={{ ...S.dashCard, padding: "14px 16px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <button style={{ ...S.check(!!todayEntry.d), width: 30, height: 30, minWidth: 30, borderRadius: 15, fontSize: 17 }}
-                      onClick={() => toggleHabitDay(h.id, today)} aria-label={todayEntry.d ? "Mark not done today" : "Mark done today"}>
-                      {todayEntry.d ? "✓" : ""}
-                    </button>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 15.5, fontWeight: 700 }}>{h.name}</div>
-                      <div style={{ fontSize: 12, color: T.mute, marginTop: 1 }}>
-                        {streak > 0 ? `${streak} day streak` : "No streak yet"}
-                      </div>
-                    </div>
-                    <button style={S.ghost(!!(todayEntry.rows && todayEntry.rows.length) || !!todayEntry.n || editing)}
-                      onClick={() => editing ? setLogEditFor(null) : openLogEditor(h)}>
-                      {editing ? "close" : (todayEntry.rows && todayEntry.rows.length) || todayEntry.n ? "edit log" : "＋ log"}
-                    </button>
+                <div style={{ ...S.dashCard, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 0 8px", borderBottom: `1px solid ${T.line}` }}>
+                    <span style={{ flex: 1, fontSize: 10.5, fontWeight: 700, color: T.mute }}>HABIT</span>
+                    {days.map((d) => (
+                      <span key={d} style={{ width: 26, textAlign: "center", fontSize: 10.5, fontWeight: d === today ? 800 : 600, color: d === today ? T.accent : T.mute }}>
+                        {dayLabel(d)[0] + dayLabel(d)[1].toLowerCase()}
+                      </span>
+                    ))}
                   </div>
-
-                  {/* today's structured log, read view */}
-                  {!editing && todayEntry.rows && todayEntry.rows.length > 0 && (
-                    <div style={{ background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginTop: 10 }}>
-                      {todayEntry.rows.map((r, i) => (
-                        <div key={i} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "2px 0", lineHeight: 1.5 }}>
-                          <span style={{ flex: 1, fontWeight: 600 }}>{r.e}</span>
-                          <span style={{ color: T.mute }}>{r.s && r.r ? `${r.s}×${r.r}` : r.s || r.r || ""}</span>
-                          <span style={{ color: T.mute, minWidth: 48, textAlign: "right" }}>{r.w || ""}</span>
+                  {habits.map((h) => {
+                    const streak = habitStreak(h.id);
+                    const todayEntry = habitLog[hKey(h.id, today)] || {};
+                    return (
+                      <div key={h.id} style={{ borderBottom: `1px solid ${T.line}` }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "9px 0" }}>
+                          <button onClick={() => { const open = expandedHabit === h.id; setExpandedHabit(open ? null : h.id); if (open) { setLogEditFor(null); setExEditFor(null); setOpenHabitHistory({}); } }}
+                            style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "baseline", gap: 7, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left", padding: 0, color: T.ink }}>
+                            <span style={{ fontSize: 10, color: T.mute }}>{expandedHabit === h.id ? "▾" : "▸"}</span>
+                            <span style={{ fontSize: 14.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.name}</span>
+                            {streak > 0 && <span style={{ fontSize: 11, color: T.accent, fontWeight: 700, flexShrink: 0 }}>{streak}d</span>}
+                          </button>
+                          {days.map((d) => {
+                            const e = habitLog[hKey(h.id, d)] || {};
+                            const summary = (e.rows || []).map(fmtRow).join(" · ") || e.n || "";
+                            return (
+                              <span key={d} style={{ width: 26, display: "flex", justifyContent: "center" }}>
+                                <button onClick={() => toggleHabitDay(h.id, d)}
+                                  title={`${fmtShort(d)}${summary ? ` — ${summary}` : ""}`}
+                                  style={{ width: 18, height: 18, borderRadius: 9, border: "none", cursor: "pointer", padding: 0,
+                                    background: e.d ? T.accent : T.tagBg,
+                                    outline: d === today ? `1.5px solid ${T.accent}` : "none", outlineOffset: 1.5 }} />
+                              </span>
+                            );
+                          })}
                         </div>
-                      ))}
-                      {todayEntry.n && <div style={{ fontSize: 12.5, color: T.mute, marginTop: 4, whiteSpace: "pre-wrap" }}>{todayEntry.n}</div>}
-                    </div>
-                  )}
-                  {!editing && (!todayEntry.rows || !todayEntry.rows.length) && todayEntry.n && (
-                    <div style={{ fontSize: 13.5, color: T.ink, background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{todayEntry.n}</div>
-                  )}
 
-                  {/* today's structured log, editor */}
-                  {editing && (
-                    <div style={{ border: `1px solid ${T.line}`, borderRadius: 12, padding: 10, marginTop: 10 }}>
-                      <div style={{ display: "flex", gap: 6, fontSize: 10.5, fontWeight: 700, color: T.mute, padding: "0 2px 4px" }}>
-                        <span style={{ flex: 2.2 }}>Exercise</span><span style={{ flex: 0.8 }}>Sets</span><span style={{ flex: 0.8 }}>Reps</span><span style={{ flex: 1 }}>Weight</span><span style={{ width: 22 }} />
-                      </div>
-                      {logRows.map((r, i) => (
-                        <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                          <input style={{ ...S.input, flex: 2.2 }} list={"exlist-" + h.id} placeholder="e.g. Bench press" value={r.e}
-                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, e: e.target.value } : x)))} />
-                          <input style={{ ...S.input, flex: 0.8 }} inputMode="numeric" placeholder="3" value={r.s}
-                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, s: e.target.value } : x)))} />
-                          <input style={{ ...S.input, flex: 0.8 }} inputMode="numeric" placeholder="10" value={r.r}
-                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, r: e.target.value } : x)))} />
-                          <input style={{ ...S.input, flex: 1 }} placeholder="40kg" value={r.w}
-                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, w: e.target.value } : x)))} />
-                          <button style={{ ...S.iconBtn, width: 22, padding: 0 }} onClick={() => setLogRows(logRows.length > 1 ? logRows.filter((_, j) => j !== i) : [{ e: "", s: "", r: "", w: "" }])} aria-label="Remove row">✕</button>
-                        </div>
-                      ))}
-                      <datalist id={"exlist-" + h.id}>{habitExerciseOptions(h).map((e) => <option key={e} value={e} />)}</datalist>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {(h.exercises || []).filter((e) => !logRows.some((r) => r.e === e)).map((e) => (
-                          <button key={e} style={S.qChip(false)} onClick={() => {
-                            const blankIdx = logRows.findIndex((r) => !r.e.trim());
-                            if (blankIdx >= 0) setLogRows(logRows.map((x, j) => (j === blankIdx ? { ...x, e } : x)));
-                            else setLogRows([...logRows, { e, s: "", r: "", w: "" }]);
-                          }}>＋ {e}</button>
-                        ))}
-                      </div>
-                      <input style={{ ...S.input, marginTop: 8 }} placeholder="Note (optional — how it felt, next targets…)" value={logNote}
-                        onChange={(e) => setLogNote(e.target.value)} />
-                      <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
-                        <button style={S.ghost(false)} onClick={() => setLogRows([...logRows, { e: "", s: "", r: "", w: "" }])}>＋ row</button>
-                        <span style={{ marginLeft: "auto" }} />
-                        <button style={S.ghost(false)} onClick={() => setLogEditFor(null)}>cancel</button>
-                        <button style={{ ...S.addBtn, padding: "6px 16px", fontSize: 14 }} onClick={() => saveLogEditor(h)}>Save</button>
-                      </div>
-                    </div>
-                  )}
+                        {/* expanded panel */}
+                        {expandedHabit === h.id && (
+                          <div style={{ padding: "0 0 12px" }}>
+                            {/* today's structured log, read view */}
+                            {logEditFor !== h.id && todayEntry.rows && todayEntry.rows.length > 0 && (
+                              <div style={{ background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginBottom: 8 }}>
+                                {todayEntry.rows.map((r, i) => (
+                                  <div key={i} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "2px 0", lineHeight: 1.5 }}>
+                                    <span style={{ flex: 1, fontWeight: 600 }}>{r.e}</span>
+                                    <span style={{ color: T.mute }}>{r.s && r.r ? `${r.s}×${r.r}` : r.s || r.r || ""}</span>
+                                    <span style={{ color: T.mute, minWidth: 48, textAlign: "right" }}>{r.w || ""}</span>
+                                  </div>
+                                ))}
+                                {todayEntry.n && <div style={{ fontSize: 12.5, color: T.mute, marginTop: 4, whiteSpace: "pre-wrap" }}>{todayEntry.n}</div>}
+                              </div>
+                            )}
+                            {logEditFor !== h.id && (!todayEntry.rows || !todayEntry.rows.length) && todayEntry.n && (
+                              <div style={{ fontSize: 13.5, color: T.ink, background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginBottom: 8, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{todayEntry.n}</div>
+                            )}
 
-                  <div style={{ display: "flex", gap: 4, marginTop: 12, alignItems: "center" }}>
-                    {days.map((d) => {
-                      const e = habitLog[hKey(h.id, d)] || {};
-                      const summary = (e.rows || []).map(fmtRow).join(" · ") || e.n || "";
-                      return (
-                        <button key={d} onClick={() => toggleHabitDay(h.id, d)}
-                          title={`${fmtShort(d)}${summary ? ` — ${summary}` : ""}`}
-                          style={{ width: 16, height: 16, borderRadius: 8, border: "none", cursor: "pointer", padding: 0, flexShrink: 0,
-                            background: e.d ? T.accent : T.tagBg, opacity: d === today ? 1 : 0.85,
-                            outline: d === today ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
-                      );
-                    })}
-                    <span style={{ fontSize: 10.5, color: T.mute, marginLeft: 6 }}>14 days</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 2, marginTop: 8, flexWrap: "wrap" }}>
-                    <button style={S.ghost(histOpen)} onClick={() => setOpenHabitHistory((p) => ({ ...p, [h.id]: !p[h.id] }))}>
-                      {histOpen ? "hide history" : "history"}
-                    </button>
-                    <button style={S.ghost(exOpen)} onClick={() => { setExEditFor(exOpen ? null : h.id); setNewExName(""); }}>exercises</button>
-                    <button style={S.ghost(false)} onClick={() => exportHabitCSV(h)} title="Download this habit's full log as CSV for analysis">export csv</button>
-                    <span style={{ marginLeft: "auto" }} />
-                    <button style={S.ghost(false)} onClick={() => renameHabit(h.id)}>rename</button>
-                    <button style={S.ghost(false)} onClick={() => deleteHabit(h.id)}>delete</button>
-                  </div>
+                            {/* today's structured log, editor */}
+                            {logEditFor === h.id && (
+                              <div style={{ border: `1px solid ${T.line}`, borderRadius: 12, padding: 10, marginBottom: 8 }}>
+                                <div style={{ display: "flex", gap: 6, fontSize: 10.5, fontWeight: 700, color: T.mute, padding: "0 2px 4px" }}>
+                                  <span style={{ flex: 2.2 }}>Exercise</span><span style={{ flex: 0.8 }}>Sets</span><span style={{ flex: 0.8 }}>Reps</span><span style={{ flex: 1 }}>Weight</span><span style={{ width: 22 }} />
+                                </div>
+                                {logRows.map((r, i) => (
+                                  <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                                    <input style={{ ...S.input, flex: 2.2 }} list={"exlist-" + h.id} placeholder="e.g. Bench press" value={r.e}
+                                      onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, e: e.target.value } : x)))} />
+                                    <input style={{ ...S.input, flex: 0.8 }} inputMode="numeric" placeholder="3" value={r.s}
+                                      onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, s: e.target.value } : x)))} />
+                                    <input style={{ ...S.input, flex: 0.8 }} inputMode="numeric" placeholder="10" value={r.r}
+                                      onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, r: e.target.value } : x)))} />
+                                    <input style={{ ...S.input, flex: 1 }} placeholder="40kg" value={r.w}
+                                      onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, w: e.target.value } : x)))} />
+                                    <button style={{ ...S.iconBtn, width: 22, padding: 0 }} onClick={() => setLogRows(logRows.length > 1 ? logRows.filter((_, j) => j !== i) : [{ e: "", s: "", r: "", w: "" }])} aria-label="Remove row">✕</button>
+                                  </div>
+                                ))}
+                                <datalist id={"exlist-" + h.id}>{habitExerciseOptions(h).map((e) => <option key={e} value={e} />)}</datalist>
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                  {(h.exercises || []).filter((e) => !logRows.some((r) => r.e === e)).map((e) => (
+                                    <button key={e} style={S.qChip(false)} onClick={() => {
+                                      const blankIdx = logRows.findIndex((r) => !r.e.trim());
+                                      if (blankIdx >= 0) setLogRows(logRows.map((x, j) => (j === blankIdx ? { ...x, e } : x)));
+                                      else setLogRows([...logRows, { e, s: "", r: "", w: "" }]);
+                                    }}>＋ {e}</button>
+                                  ))}
+                                </div>
+                                <input style={{ ...S.input, marginTop: 8 }} placeholder="Note (optional — how it felt, next targets…)" value={logNote}
+                                  onChange={(e) => setLogNote(e.target.value)} />
+                                <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
+                                  <button style={S.ghost(false)} onClick={() => setLogRows([...logRows, { e: "", s: "", r: "", w: "" }])}>＋ row</button>
+                                  <span style={{ marginLeft: "auto" }} />
+                                  <button style={S.ghost(false)} onClick={() => setLogEditFor(null)}>cancel</button>
+                                  <button style={{ ...S.addBtn, padding: "6px 16px", fontSize: 14 }} onClick={() => { saveLogEditor(h); }}>Save</button>
+                                </div>
+                              </div>
+                            )}
 
-                  {/* exercise presets editor */}
-                  {exOpen && (
-                    <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
-                      <div style={{ fontSize: 12, color: T.mute, marginBottom: 6 }}>Your exercises — they appear as quick chips and suggestions when logging.</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-                        {(h.exercises || []).length === 0 && <span style={{ fontSize: 13, color: T.mute }}>None yet.</span>}
-                        {(h.exercises || []).map((e) => (
-                          <span key={e} style={{ ...S.qChip(false), display: "inline-flex", alignItems: "center", gap: 6, cursor: "default" }}>
-                            {e}
-                            <button style={{ background: "none", border: "none", color: T.mute, cursor: "pointer", padding: 0, fontSize: 12, fontFamily: "inherit" }}
-                              onClick={() => removeExercisePreset(h, e)} aria-label={`Remove ${e}`}>✕</button>
-                          </span>
-                        ))}
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <input style={{ ...S.input, flex: 1 }} placeholder="Add exercise (e.g. Deadlift)…" value={newExName}
-                          onChange={(e) => setNewExName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addExercisePreset(h)} />
-                        <button style={{ ...S.addBtn, padding: "6px 14px", fontSize: 14 }} onClick={() => addExercisePreset(h)}>Add</button>
-                      </div>
-                    </div>
-                  )}
+                            <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                              {logEditFor !== h.id && (
+                                <button style={S.ghost(!!(todayEntry.rows && todayEntry.rows.length) || !!todayEntry.n)} onClick={() => openLogEditor(h)}>
+                                  {(todayEntry.rows && todayEntry.rows.length) || todayEntry.n ? "edit today's log" : "＋ log today"}
+                                </button>
+                              )}
+                              <button style={S.ghost(!!openHabitHistory[h.id])} onClick={() => setOpenHabitHistory((p) => ({ ...p, [h.id]: !p[h.id] }))}>
+                                {openHabitHistory[h.id] ? "hide history" : "history"}
+                              </button>
+                              <button style={S.ghost(exEditFor === h.id)} onClick={() => { setExEditFor(exEditFor === h.id ? null : h.id); setNewExName(""); }}>exercises</button>
+                              <button style={S.ghost(false)} onClick={() => exportHabitCSV(h)} title="Download this habit's full log as CSV for analysis">export csv</button>
+                              <span style={{ marginLeft: "auto" }} />
+                              <button style={S.ghost(false)} onClick={() => renameHabit(h.id)}>rename</button>
+                              <button style={S.ghost(false)} onClick={() => deleteHabit(h.id)}>delete</button>
+                            </div>
 
-                  {histOpen && (
-                    <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
-                      {historyEntries.length === 0 && <div style={{ fontSize: 13, color: T.mute }}>Nothing logged yet.</div>}
-                      {historyEntries.map(([d, e]) => (
-                        <div key={d} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 13, alignItems: "baseline" }}>
-                          <span style={{ color: e.d ? T.accent : T.mute, minWidth: 64, fontWeight: 600 }}>{fmtShort(d)}</span>
-                          <span style={{ color: (e.rows && e.rows.length) || e.n ? T.ink : T.mute, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
-                            {(e.rows || []).map(fmtRow).join(" · ") || e.n || (e.d ? "Done" : "—")}
-                            {e.rows && e.rows.length > 0 && e.n ? ` — ${e.n}` : ""}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                            {/* exercise presets editor */}
+                            {exEditFor === h.id && (
+                              <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
+                                <div style={{ fontSize: 12, color: T.mute, marginBottom: 6 }}>Your exercises — they appear as quick chips and suggestions when logging.</div>
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                                  {(h.exercises || []).length === 0 && <span style={{ fontSize: 13, color: T.mute }}>None yet.</span>}
+                                  {(h.exercises || []).map((e) => (
+                                    <span key={e} style={{ ...S.qChip(false), display: "inline-flex", alignItems: "center", gap: 6, cursor: "default" }}>
+                                      {e}
+                                      <button style={{ background: "none", border: "none", color: T.mute, cursor: "pointer", padding: 0, fontSize: 12, fontFamily: "inherit" }}
+                                        onClick={() => removeExercisePreset(h, e)} aria-label={`Remove ${e}`}>✕</button>
+                                    </span>
+                                  ))}
+                                </div>
+                                <div style={{ display: "flex", gap: 8 }}>
+                                  <input style={{ ...S.input, flex: 1 }} placeholder="Add exercise (e.g. Deadlift)…" value={newExName}
+                                    onChange={(e) => setNewExName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addExercisePreset(h)} />
+                                  <button style={{ ...S.addBtn, padding: "6px 14px", fontSize: 14 }} onClick={() => addExercisePreset(h)}>Add</button>
+                                </div>
+                              </div>
+                            )}
+
+                            {openHabitHistory[h.id] && (
+                              <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
+                                {(() => {
+                                  const historyEntries = Object.entries(habitLog)
+                                    .filter(([k, v]) => k.startsWith(h.id + "|") && (v.d || v.n || (v.rows && v.rows.length)))
+                                    .map(([k, v]) => [k.slice(h.id.length + 1), v])
+                                    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+                                    .slice(0, 30);
+                                  if (!historyEntries.length) return <div style={{ fontSize: 13, color: T.mute }}>Nothing logged yet.</div>;
+                                  return historyEntries.map(([d, e]) => (
+                                    <div key={d} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 13, alignItems: "baseline" }}>
+                                      <span style={{ color: e.d ? T.accent : T.mute, minWidth: 64, fontWeight: 600 }}>{fmtShort(d)}</span>
+                                      <span style={{ color: (e.rows && e.rows.length) || e.n ? T.ink : T.mute, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+                                        {(e.rows || []).map(fmtRow).join(" · ") || e.n || (e.d ? "Done" : "—")}
+                                        {e.rows && e.rows.length > 0 && e.n ? ` — ${e.n}` : ""}
+                                      </span>
+                                    </div>
+                                  ));
+                                })()}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
-            })}
+            })()}
 
             <div style={{ ...S.addCard, marginTop: 14 }}>
               <div style={{ display: "flex", gap: 8 }}>

@@ -247,6 +247,11 @@ export default function TaskManager() {
   const [habitLog, setHabitLog] = useState({}); // { "habitId|YYYY-MM-DD": {d:1, n:"note"} }
   const [openHabitHistory, setOpenHabitHistory] = useState({});
   const [newHabitName, setNewHabitName] = useState("");
+  const [logEditFor, setLogEditFor] = useState(null); // habit id whose today-log editor is open
+  const [logRows, setLogRows] = useState([]); // draft [{e, s, r, w}]
+  const [logNote, setLogNote] = useState("");
+  const [exEditFor, setExEditFor] = useState(null); // habit id whose exercise presets are being edited
+  const [newExName, setNewExName] = useState("");
   const [stickyNote, setStickyNote] = useState("");
   const [stickyOpen, setStickyOpen] = useState(false);
   const [newListName, setNewListName] = useState("");
@@ -887,15 +892,66 @@ export default function TaskManager() {
     else next[k] = { ...(cur || {}), d: 1 };
     persistHabits(null, next);
   };
-  const editHabitNote = (id, date) => {
-    const k = hKey(id, date);
+  // Structured logging: each day's entry can carry rows of
+  // {e: exercise, s: sets, r: reps, w: weight} — separate columns so the
+  // data stays analyzable (and exportable as CSV) instead of freeform text.
+  const openLogEditor = (h) => {
+    const cur = habitLog[hKey(h.id, today)] || {};
+    setLogRows(cur.rows && cur.rows.length ? cur.rows.map((r) => ({ ...r })) : [{ e: "", s: "", r: "", w: "" }]);
+    setLogNote(cur.n || "");
+    setLogEditFor(h.id);
+    setExEditFor(null);
+  };
+  const saveLogEditor = (h) => {
+    const rows = logRows.map((r) => ({ e: (r.e || "").trim(), s: (r.s || "").trim(), r: (r.r || "").trim(), w: (r.w || "").trim() }))
+      .filter((r) => r.e);
+    const k = hKey(h.id, today);
     const cur = habitLog[k] || {};
-    const n = window.prompt("Log details (e.g. Bench 3×8 @40kg, 20 min run):", cur.n || "");
-    if (n === null) return;
     const next = { ...habitLog };
-    if (!n.trim() && !cur.d) delete next[k];
-    else next[k] = { d: cur.d || 1, n: n.trim() }; // adding a log marks the day done
+    if (!rows.length && !logNote.trim() && !cur.d) delete next[k];
+    else next[k] = { d: 1, ...(logNote.trim() ? { n: logNote.trim() } : {}), ...(rows.length ? { rows } : {}) }; // logging marks the day done
     persistHabits(null, next);
+    setLogEditFor(null);
+  };
+  const habitExerciseOptions = (h) => {
+    const used = new Set(h.exercises || []);
+    Object.entries(habitLog).forEach(([k, v]) => {
+      if (k.startsWith(h.id + "|") && Array.isArray(v.rows)) v.rows.forEach((r) => r.e && used.add(r.e));
+    });
+    return Array.from(used).sort();
+  };
+  const addExercisePreset = (h) => {
+    const name = newExName.trim();
+    if (!name) return;
+    const cur = h.exercises || [];
+    if (cur.some((e) => e.toLowerCase() === name.toLowerCase())) { setNewExName(""); return; }
+    persistHabits(habits.map((x) => (x.id === h.id ? { ...x, exercises: [...cur, name] } : x)), null);
+    setNewExName("");
+  };
+  const removeExercisePreset = (h, name) => {
+    persistHabits(habits.map((x) => (x.id === h.id ? { ...x, exercises: (x.exercises || []).filter((e) => e !== name) } : x)), null);
+  };
+  const fmtRow = (r) => `${r.e}${r.s || r.r ? ` ${r.s || "?"}×${r.r || "?"}` : ""}${r.w ? ` @${r.w}` : ""}`;
+  const exportHabitCSV = (h) => {
+    const esc2 = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [["Date", "Done", "Exercise", "Sets", "Reps", "Weight", "Note"].join(",")];
+    Object.entries(habitLog)
+      .filter(([k]) => k.startsWith(h.id + "|"))
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .forEach(([k, v]) => {
+        const date = k.slice(h.id.length + 1);
+        if (Array.isArray(v.rows) && v.rows.length) {
+          v.rows.forEach((r, i) => lines.push([date, v.d ? "Yes" : "No", esc2(r.e), esc2(r.s), esc2(r.r), esc2(r.w), i === 0 ? esc2(v.n || "") : ""].join(",")));
+        } else {
+          lines.push([date, v.d ? "Yes" : "No", "", "", "", "", esc2(v.n || "")].join(","));
+        }
+      });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${h.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-log-${today}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
   const lastNDates = (n) => Array.from({ length: n }, (_, i) => addDays(today, -(n - 1 - i)));
   const habitStreak = (id) => {
@@ -1410,6 +1466,7 @@ export default function TaskManager() {
           .tm-bottomnav { display: none !important; }
           .tm-wrap { max-width: 900px !important; margin: 0 !important; padding: 28px 32px !important; flex: 1 1 auto; min-width: 0; }
           .tm-fab { right: 32px !important; }
+          .tm-fab2 { right: 98px !important; }
         }
       `}</style>
       <nav className="tm-sidebar" style={{ display: "none", flexDirection: "column", width: 232, minWidth: 232, position: "sticky", top: 0, height: "100vh", padding: "26px 14px", borderRight: `1px solid ${T.line}`, gap: 2, boxSizing: "border-box" }}>
@@ -1432,11 +1489,6 @@ export default function TaskManager() {
             {view === "Lists" && <p style={S.sub}>{lists.length} list{lists.length === 1 ? "" : "s"}</p>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={{ ...S.round, position: "relative", borderColor: (stickyOpen || stickyNote.trim()) ? T.amber : T.line, color: (stickyOpen || stickyNote.trim()) ? T.amber : T.ink }}
-              onClick={() => setStickyOpen(!stickyOpen)} aria-label="Quick note" title="Quick note — jot anything">
-              ✎
-              {!!stickyNote.trim() && !stickyOpen && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: 4, background: T.amber }} />}
-            </button>
             <button style={{ ...S.round, position: "relative", borderColor: dirty ? T.accent : T.line }} onClick={syncPush} disabled={syncing} aria-label="Sync to Sheets" title={dirty ? "Unsynced changes — tap to sync" : "Sync to Sheets"}>
               {syncing ? "⧗" : "⇅"}
               {dirty && !syncing && <span style={{ position: "absolute", top: 4, right: 4, width: 8, height: 8, borderRadius: 4, background: T.accent }} />}
@@ -1444,16 +1496,6 @@ export default function TaskManager() {
             <button style={S.round} onClick={() => setTheme(THEME_MODES[(THEME_MODES.indexOf(themeMode) + 1) % 3])} aria-label="Switch appearance" title={`Appearance: ${themeMode} — tap to change`}>{THEME_ICON[themeMode]}</button>
           </div>
         </header>
-        {stickyOpen && (
-          <div style={{ background: T.amberSoft, border: `1px solid ${T.amber}33`, borderRadius: 14, padding: "10px 12px", marginTop: 12 }}>
-            <textarea
-              style={{ width: "100%", minHeight: 72, boxSizing: "border-box", background: "transparent", border: "none", outline: "none", resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.55, color: T.ink }}
-              placeholder="Jot anything — it syncs across your devices…"
-              value={stickyNote} autoFocus
-              onChange={(e) => setStickyNote(e.target.value)}
-              onBlur={() => { savePrefs({ stickyNote }); setDirty(true); }} />
-          </div>
-        )}
         {view === "Tasks" && focus && (
           <div style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 700, fontSize: 14, color: T.accent, marginTop: 10 }}>
             {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
@@ -2041,8 +2083,10 @@ export default function TaskManager() {
               const streak = habitStreak(h.id);
               const days = lastNDates(14);
               const histOpen = openHabitHistory[h.id];
+              const editing = logEditFor === h.id;
+              const exOpen = exEditFor === h.id;
               const historyEntries = Object.entries(habitLog)
-                .filter(([k, v]) => k.startsWith(h.id + "|") && (v.d || v.n))
+                .filter(([k, v]) => k.startsWith(h.id + "|") && (v.d || v.n || (v.rows && v.rows.length)))
                 .map(([k, v]) => [k.slice(h.id.length + 1), v])
                 .sort((a, b) => (a[0] < b[0] ? 1 : -1))
                 .slice(0, 30);
@@ -2059,19 +2103,76 @@ export default function TaskManager() {
                         {streak > 0 ? `${streak} day streak` : "No streak yet"}
                       </div>
                     </div>
-                    <button style={S.ghost(!!todayEntry.n)} onClick={() => editHabitNote(h.id, today)}>
-                      {todayEntry.n ? "edit log" : "＋ log"}
+                    <button style={S.ghost(!!(todayEntry.rows && todayEntry.rows.length) || !!todayEntry.n || editing)}
+                      onClick={() => editing ? setLogEditFor(null) : openLogEditor(h)}>
+                      {editing ? "close" : (todayEntry.rows && todayEntry.rows.length) || todayEntry.n ? "edit log" : "＋ log"}
                     </button>
                   </div>
-                  {todayEntry.n && (
+
+                  {/* today's structured log, read view */}
+                  {!editing && todayEntry.rows && todayEntry.rows.length > 0 && (
+                    <div style={{ background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginTop: 10 }}>
+                      {todayEntry.rows.map((r, i) => (
+                        <div key={i} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "2px 0", lineHeight: 1.5 }}>
+                          <span style={{ flex: 1, fontWeight: 600 }}>{r.e}</span>
+                          <span style={{ color: T.mute }}>{r.s && r.r ? `${r.s}×${r.r}` : r.s || r.r || ""}</span>
+                          <span style={{ color: T.mute, minWidth: 48, textAlign: "right" }}>{r.w || ""}</span>
+                        </div>
+                      ))}
+                      {todayEntry.n && <div style={{ fontSize: 12.5, color: T.mute, marginTop: 4, whiteSpace: "pre-wrap" }}>{todayEntry.n}</div>}
+                    </div>
+                  )}
+                  {!editing && (!todayEntry.rows || !todayEntry.rows.length) && todayEntry.n && (
                     <div style={{ fontSize: 13.5, color: T.ink, background: T.tagBg, borderRadius: 10, padding: "8px 12px", marginTop: 10, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{todayEntry.n}</div>
                   )}
+
+                  {/* today's structured log, editor */}
+                  {editing && (
+                    <div style={{ border: `1px solid ${T.line}`, borderRadius: 12, padding: 10, marginTop: 10 }}>
+                      <div style={{ display: "flex", gap: 6, fontSize: 10.5, fontWeight: 700, color: T.mute, padding: "0 2px 4px" }}>
+                        <span style={{ flex: 2.2 }}>Exercise</span><span style={{ flex: 0.8 }}>Sets</span><span style={{ flex: 0.8 }}>Reps</span><span style={{ flex: 1 }}>Weight</span><span style={{ width: 22 }} />
+                      </div>
+                      {logRows.map((r, i) => (
+                        <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                          <input style={{ ...S.input, flex: 2.2 }} list={"exlist-" + h.id} placeholder="e.g. Bench press" value={r.e}
+                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, e: e.target.value } : x)))} />
+                          <input style={{ ...S.input, flex: 0.8 }} inputMode="numeric" placeholder="3" value={r.s}
+                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, s: e.target.value } : x)))} />
+                          <input style={{ ...S.input, flex: 0.8 }} inputMode="numeric" placeholder="10" value={r.r}
+                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, r: e.target.value } : x)))} />
+                          <input style={{ ...S.input, flex: 1 }} placeholder="40kg" value={r.w}
+                            onChange={(e) => setLogRows(logRows.map((x, j) => (j === i ? { ...x, w: e.target.value } : x)))} />
+                          <button style={{ ...S.iconBtn, width: 22, padding: 0 }} onClick={() => setLogRows(logRows.length > 1 ? logRows.filter((_, j) => j !== i) : [{ e: "", s: "", r: "", w: "" }])} aria-label="Remove row">✕</button>
+                        </div>
+                      ))}
+                      <datalist id={"exlist-" + h.id}>{habitExerciseOptions(h).map((e) => <option key={e} value={e} />)}</datalist>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {(h.exercises || []).filter((e) => !logRows.some((r) => r.e === e)).map((e) => (
+                          <button key={e} style={S.qChip(false)} onClick={() => {
+                            const blankIdx = logRows.findIndex((r) => !r.e.trim());
+                            if (blankIdx >= 0) setLogRows(logRows.map((x, j) => (j === blankIdx ? { ...x, e } : x)));
+                            else setLogRows([...logRows, { e, s: "", r: "", w: "" }]);
+                          }}>＋ {e}</button>
+                        ))}
+                      </div>
+                      <input style={{ ...S.input, marginTop: 8 }} placeholder="Note (optional — how it felt, next targets…)" value={logNote}
+                        onChange={(e) => setLogNote(e.target.value)} />
+                      <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
+                        <button style={S.ghost(false)} onClick={() => setLogRows([...logRows, { e: "", s: "", r: "", w: "" }])}>＋ row</button>
+                        <span style={{ marginLeft: "auto" }} />
+                        <button style={S.ghost(false)} onClick={() => setLogEditFor(null)}>cancel</button>
+                        <button style={{ ...S.addBtn, padding: "6px 16px", fontSize: 14 }} onClick={() => saveLogEditor(h)}>Save</button>
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{ display: "flex", gap: 4, marginTop: 12, alignItems: "center" }}>
                     {days.map((d) => {
                       const e = habitLog[hKey(h.id, d)] || {};
+                      const summary = (e.rows || []).map(fmtRow).join(" · ") || e.n || "";
                       return (
                         <button key={d} onClick={() => toggleHabitDay(h.id, d)}
-                          title={`${fmtShort(d)}${e.n ? ` — ${e.n}` : ""}`}
+                          title={`${fmtShort(d)}${summary ? ` — ${summary}` : ""}`}
                           style={{ width: 16, height: 16, borderRadius: 8, border: "none", cursor: "pointer", padding: 0, flexShrink: 0,
                             background: e.d ? T.accent : T.tagBg, opacity: d === today ? 1 : 0.85,
                             outline: d === today ? `2px solid ${T.accent}` : "none", outlineOffset: 2 }} />
@@ -2079,21 +2180,49 @@ export default function TaskManager() {
                     })}
                     <span style={{ fontSize: 10.5, color: T.mute, marginLeft: 6 }}>14 days</span>
                   </div>
-                  <div style={{ display: "flex", gap: 2, marginTop: 8 }}>
+                  <div style={{ display: "flex", gap: 2, marginTop: 8, flexWrap: "wrap" }}>
                     <button style={S.ghost(histOpen)} onClick={() => setOpenHabitHistory((p) => ({ ...p, [h.id]: !p[h.id] }))}>
                       {histOpen ? "hide history" : "history"}
                     </button>
+                    <button style={S.ghost(exOpen)} onClick={() => { setExEditFor(exOpen ? null : h.id); setNewExName(""); }}>exercises</button>
+                    <button style={S.ghost(false)} onClick={() => exportHabitCSV(h)} title="Download this habit's full log as CSV for analysis">export csv</button>
                     <span style={{ marginLeft: "auto" }} />
                     <button style={S.ghost(false)} onClick={() => renameHabit(h.id)}>rename</button>
                     <button style={S.ghost(false)} onClick={() => deleteHabit(h.id)}>delete</button>
                   </div>
+
+                  {/* exercise presets editor */}
+                  {exOpen && (
+                    <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
+                      <div style={{ fontSize: 12, color: T.mute, marginBottom: 6 }}>Your exercises — they appear as quick chips and suggestions when logging.</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                        {(h.exercises || []).length === 0 && <span style={{ fontSize: 13, color: T.mute }}>None yet.</span>}
+                        {(h.exercises || []).map((e) => (
+                          <span key={e} style={{ ...S.qChip(false), display: "inline-flex", alignItems: "center", gap: 6, cursor: "default" }}>
+                            {e}
+                            <button style={{ background: "none", border: "none", color: T.mute, cursor: "pointer", padding: 0, fontSize: 12, fontFamily: "inherit" }}
+                              onClick={() => removeExercisePreset(h, e)} aria-label={`Remove ${e}`}>✕</button>
+                          </span>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input style={{ ...S.input, flex: 1 }} placeholder="Add exercise (e.g. Deadlift)…" value={newExName}
+                          onChange={(e) => setNewExName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addExercisePreset(h)} />
+                        <button style={{ ...S.addBtn, padding: "6px 14px", fontSize: 14 }} onClick={() => addExercisePreset(h)}>Add</button>
+                      </div>
+                    </div>
+                  )}
+
                   {histOpen && (
                     <div style={{ marginTop: 6, borderTop: `1px dashed ${T.line}`, paddingTop: 8 }}>
                       {historyEntries.length === 0 && <div style={{ fontSize: 13, color: T.mute }}>Nothing logged yet.</div>}
                       {historyEntries.map(([d, e]) => (
                         <div key={d} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 13, alignItems: "baseline" }}>
                           <span style={{ color: e.d ? T.accent : T.mute, minWidth: 64, fontWeight: 600 }}>{fmtShort(d)}</span>
-                          <span style={{ color: e.n ? T.ink : T.mute, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{e.n || (e.d ? "Done" : "—")}</span>
+                          <span style={{ color: (e.rows && e.rows.length) || e.n ? T.ink : T.mute, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+                            {(e.rows || []).map(fmtRow).join(" · ") || e.n || (e.d ? "Done" : "—")}
+                            {e.rows && e.rows.length > 0 && e.n ? ` — ${e.n}` : ""}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -2279,6 +2408,27 @@ export default function TaskManager() {
       {/* floating add button (Tasks view) */}
       {view === "Tasks" && !addOpen && !editing && (
         <button style={S.fab} className="tm-fab" onClick={() => { setAddOpen(true); setAddFocus(true); }} aria-label="Add task" title="Add task">＋</button>
+      )}
+
+      {/* floating quick-note button — sits left of the + on Tasks, alone elsewhere */}
+      {!addOpen && !editing && !stickyOpen && (
+        <button
+          style={{ ...S.fab, width: 46, height: 46, borderRadius: 23, fontSize: 19, lineHeight: "46px", bottom: 79,
+            right: view === "Tasks" ? "max(84px, calc(50% - 360px + 84px))" : "max(18px, calc(50% - 360px + 18px))",
+            background: T.card, color: stickyNote.trim() ? T.amber : T.mute, border: `1px solid ${stickyNote.trim() ? T.amber : T.line}`, boxShadow: T.shadow }}
+          className="tm-fab2" onClick={() => setStickyOpen(true)} aria-label="Quick note" title="Quick note — jot anything">✎</button>
+      )}
+      {stickyOpen && (
+        <div style={{ position: "fixed", bottom: 74, left: "50%", transform: "translateX(-50%)", width: "min(660px, calc(100% - 28px))", zIndex: 16,
+          background: T.amberSoft, border: `1px solid ${T.amber}55`, borderRadius: 16, padding: "10px 12px 6px", boxShadow: "0 6px 24px rgba(0,0,0,0.18)" }}>
+          <textarea
+            style={{ width: "100%", minHeight: 84, boxSizing: "border-box", background: "transparent", border: "none", outline: "none", resize: "vertical", fontFamily: "inherit", fontSize: 14, lineHeight: 1.55, color: T.ink, display: "block" }}
+            placeholder="Jot anything — it syncs across your devices…"
+            value={stickyNote} autoFocus
+            onChange={(e) => setStickyNote(e.target.value)}
+            onBlur={() => { savePrefs({ stickyNote }); setDirty(true); setStickyOpen(false); }} />
+          <div style={{ fontSize: 11, color: T.mute, textAlign: "right", padding: "2px 2px 4px" }}>tap anywhere else to save & close</div>
+        </div>
       )}
 
       {/* bottom navigation (mobile only — hidden by the sidebar media query above) */}
